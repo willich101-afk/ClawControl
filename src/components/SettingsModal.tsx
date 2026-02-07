@@ -14,7 +14,9 @@ export function SettingsModal() {
     connect,
     disconnect,
     connected,
-    connecting
+    connecting,
+    notificationsEnabled,
+    setNotificationsEnabled
   } = useStore()
 
   const [url, setUrl] = useState(serverUrl)
@@ -147,6 +149,21 @@ export function SettingsModal() {
           <div className="connection-status-box">
             <span className={`status-indicator ${connected ? 'connected' : 'disconnected'}`} />
             <span>{connected ? 'Connected' : connecting ? 'Connecting...' : 'Disconnected'}</span>
+          </div>
+
+          <div className="form-group" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px', marginTop: '16px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span>Notifications</span>
+              <label className="toggle-switch" style={{ marginLeft: '8px' }}>
+                <input
+                  type="checkbox"
+                  checked={notificationsEnabled}
+                  onChange={(e) => setNotificationsEnabled(e.target.checked)}
+                />
+                <span className="toggle-slider"></span>
+              </label>
+            </label>
+            <span className="form-hint">Get notified when an agent responds</span>
           </div>
         </div>
 

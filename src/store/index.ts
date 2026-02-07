@@ -66,10 +66,13 @@ interface AppState {
   clearMessages: () => void
   isStreaming: boolean
   setIsStreaming: (streaming: boolean) => void
+  hadStreamChunks: boolean
   thinkingEnabled: boolean
   setThinkingEnabled: (enabled: boolean) => void
 
   // Notifications & Unread
+  notificationsEnabled: boolean
+  setNotificationsEnabled: (enabled: boolean) => Promise<void>
   unreadCounts: Record<string, number>
   clearUnread: (sessionId: string) => void
   streamingSessionId: string | null
@@ -101,6 +104,16 @@ interface AppState {
   fetchAgents: () => Promise<void>
   fetchSkills: () => Promise<void>
   fetchCronJobs: () => Promise<void>
+}
+
+function shouldNotify(
+  notificationsEnabled: boolean,
+  msgSessionId: string | null,
+  currentSessionId: string | null
+): boolean {
+  if (!notificationsEnabled) return false
+  if (Platform.isAppActive() && msgSessionId === currentSessionId) return false
+  return true
 }
 
 export const useStore = create<AppState>()(
@@ -273,10 +286,19 @@ export const useStore = create<AppState>()(
       clearMessages: () => set({ messages: [] }),
       isStreaming: false,
       setIsStreaming: (streaming) => set({ isStreaming: streaming }),
+      hadStreamChunks: false,
       thinkingEnabled: false,
       setThinkingEnabled: (enabled) => set({ thinkingEnabled: enabled }),
 
       // Notifications & Unread
+      notificationsEnabled: false,
+      setNotificationsEnabled: async (enabled) => {
+        if (enabled) {
+          const granted = await Platform.requestNotificationPermission()
+          if (!granted) return
+        }
+        set({ notificationsEnabled: enabled })
+      },
       unreadCounts: {},
       clearUnread: (sessionId) => set((state) => {
         const { [sessionId]: _, ...rest } = state.unreadCounts
@@ -302,6 +324,7 @@ export const useStore = create<AppState>()(
           currentSessionId: null,
           messages: [],
           isStreaming: false,
+          hadStreamChunks: false,
           streamingSessionId: null
         })
       },
@@ -456,7 +479,10 @@ export const useStore = create<AppState>()(
             // Only notify for non-streamed responses (streamEnd handles streamed ones)
             if (message.role === 'assistant' && !replacedStreaming) {
               const preview = message.content.slice(0, 100)
-              window.electronAPI?.showNotification('Agent responded', preview).catch(() => {})
+              const { notificationsEnabled, streamingSessionId: msgSession, currentSessionId: activeSession } = get()
+              if (shouldNotify(notificationsEnabled, msgSession, activeSession)) {
+                Platform.showNotification('Agent responded', preview).catch(() => {})
+              }
             }
           })
 
@@ -465,7 +491,7 @@ export const useStore = create<AppState>()(
           })
 
           client.on('disconnected', () => {
-            set({ connected: false, isStreaming: false })
+            set({ connected: false, isStreaming: false, hadStreamChunks: false })
           })
 
           client.on('certError', (payload: unknown) => {
@@ -474,48 +500,57 @@ export const useStore = create<AppState>()(
           })
 
           client.on('streamStart', () => {
-            set({ isStreaming: true })
+            set({ isStreaming: true, hadStreamChunks: false })
           })
 
           client.on('streamChunk', (chunkArg: unknown) => {
-            const chunk = String(chunkArg)
+            const payload = chunkArg as any
+            const kind = payload && typeof payload === 'object' ? String(payload.kind || '') : ''
+            const text =
+              kind && payload && typeof payload === 'object'
+                ? String(payload.text || '')
+                : String(chunkArg)
+
             // Skip empty chunks
-            if (!chunk) return
+            if (!text) return
 
             set((state) => {
               const messages = [...state.messages]
               const lastMessage = messages[messages.length - 1]
 
               if (lastMessage && lastMessage.role === 'assistant') {
-                // Append delta to existing assistant message
-                const updatedMessage = {
-                  ...lastMessage,
-                  content: lastMessage.content + chunk
-                }
+                const nextContent = kind === 'replace'
+                  ? text
+                  : (lastMessage.content + text)
+
+                const updatedMessage = { ...lastMessage, content: nextContent }
                 messages[messages.length - 1] = updatedMessage
-                return { messages, isStreaming: true }
+                return { messages, isStreaming: true, hadStreamChunks: true }
               } else {
                 // Create new assistant placeholder
                 const newMessage: Message = {
                   id: `streaming-${Date.now()}`,
                   role: 'assistant',
-                  content: chunk,
+                  content: text,
                   timestamp: new Date().toISOString()
                 }
-                return { messages: [...messages, newMessage], isStreaming: true }
+                return { messages: [...messages, newMessage], isStreaming: true, hadStreamChunks: true }
               }
             })
           })
 
           client.on('streamEnd', () => {
-            const { streamingSessionId, currentSessionId, messages } = get()
+            const { streamingSessionId, currentSessionId, messages, hadStreamChunks } = get()
 
             // If streamEnd fires while we still have a streamingSessionId, the response completed
-            if (streamingSessionId) {
+            if (streamingSessionId && hadStreamChunks) {
               const lastMsg = messages[messages.length - 1]
               if (lastMsg?.role === 'assistant') {
                 const preview = lastMsg.content.slice(0, 100)
-                window.electronAPI?.showNotification('Agent responded', preview).catch(() => {})
+                const { notificationsEnabled, currentSessionId: activeSession } = get()
+                if (shouldNotify(notificationsEnabled, streamingSessionId, activeSession)) {
+                  Platform.showNotification('Agent responded', preview).catch(() => {})
+                }
               }
 
               if (streamingSessionId !== currentSessionId) {
@@ -528,7 +563,7 @@ export const useStore = create<AppState>()(
               }
             }
 
-            set({ isStreaming: false, streamingSessionId: null })
+            set({ isStreaming: false, streamingSessionId: null, hadStreamChunks: false })
           })
 
           await client.connect()
@@ -587,6 +622,7 @@ export const useStore = create<AppState>()(
         // Reset streaming state so user can always send follow-up messages
         set({
           isStreaming: false,
+          hadStreamChunks: false,
           streamingSessionId: requestedSessionId
         })
 
@@ -705,7 +741,8 @@ export const useStore = create<AppState>()(
         serverUrl: state.serverUrl,
         authMode: state.authMode,
         sidebarCollapsed: state.sidebarCollapsed,
-        thinkingEnabled: state.thinkingEnabled
+        thinkingEnabled: state.thinkingEnabled,
+        notificationsEnabled: state.notificationsEnabled
       })
     }
   )

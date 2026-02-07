@@ -7,6 +7,7 @@ import { Browser } from '@capacitor/browser'
 import { StatusBar, Style } from '@capacitor/status-bar'
 import { Keyboard } from '@capacitor/keyboard'
 import { App } from '@capacitor/app'
+import { LocalNotifications } from '@capacitor/local-notifications'
 
 export type PlatformType = 'electron' | 'ios' | 'android' | 'web'
 
@@ -204,4 +205,90 @@ export async function isEncryptionAvailable(): Promise<boolean> {
   // which are sandboxed but not encrypted. Returns false to reflect this.
   if (isNativeMobile()) return false
   return false
+}
+
+// Notifications
+export async function requestNotificationPermission(): Promise<boolean> {
+  const platform = getPlatform()
+
+  if (platform === 'electron') {
+    return true
+  }
+
+  if (isNativeMobile()) {
+    try {
+      let perms = await LocalNotifications.checkPermissions()
+      if (perms.display === 'granted') return true
+      if (perms.display === 'denied') return false
+      perms = await LocalNotifications.requestPermissions()
+      return perms.display === 'granted'
+    } catch {
+      return false
+    }
+  }
+
+  // Web
+  if (typeof Notification !== 'undefined') {
+    const result = await Notification.requestPermission()
+    return result === 'granted'
+  }
+  return false
+}
+
+let _notificationIdCounter = 1
+
+export async function showNotification(title: string, body: string): Promise<void> {
+  const platform = getPlatform()
+
+  if (platform === 'electron') {
+    await (window as any).electronAPI?.showNotification(title, body)
+    return
+  }
+
+  if (isNativeMobile()) {
+    await LocalNotifications.schedule({
+      notifications: [{
+        title,
+        body,
+        id: _notificationIdCounter++
+      }]
+    })
+    return
+  }
+
+  // Web
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    new Notification(title, { body })
+  }
+}
+
+// App visibility tracking
+let _appIsActive = true
+
+export function isAppActive(): boolean {
+  return _appIsActive
+}
+
+export function setupAppVisibilityTracking(): () => void {
+  if (isNativeMobile()) {
+    const resumeListener = App.addListener('resume', () => {
+      _appIsActive = true
+    })
+    const pauseListener = App.addListener('pause', () => {
+      _appIsActive = false
+    })
+    return () => {
+      resumeListener.then(l => l.remove())
+      pauseListener.then(l => l.remove())
+    }
+  }
+
+  // Desktop / Web: use visibilitychange
+  const handler = () => {
+    _appIsActive = document.visibilityState === 'visible'
+  }
+  document.addEventListener('visibilitychange', handler)
+  return () => {
+    document.removeEventListener('visibilitychange', handler)
+  }
 }

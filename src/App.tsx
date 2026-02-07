@@ -15,7 +15,8 @@ import {
   setStatusBarStyle,
   setupKeyboardListeners,
   setupAppListeners,
-  setupBackButton
+  setupBackButton,
+  setupAppVisibilityTracking
 } from './lib/platform'
 
 function App() {
@@ -33,6 +34,12 @@ function App() {
       setStatusBarStyle(theme === 'dark')
     }
   }, [theme])
+
+  // App visibility tracking (all platforms)
+  useEffect(() => {
+    const cleanup = setupAppVisibilityTracking()
+    return cleanup
+  }, [])
 
   // Mobile platform initialization
   useEffect(() => {
