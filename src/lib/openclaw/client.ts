@@ -580,6 +580,14 @@ export class OpenClawClient {
     return agentsApi.setAgentFile(this.call.bind(this), agentId, fileName, content)
   }
 
+  async createAgent(params: agentsApi.CreateAgentParams): Promise<agentsApi.CreateAgentResult> {
+    return agentsApi.createAgent(this.call.bind(this), params)
+  }
+
+  async updateAgent(params: { agentId: string; name?: string; workspace?: string; model?: string; avatar?: string }): Promise<boolean> {
+    return agentsApi.updateAgent(this.call.bind(this), params)
+  }
+
   // Skills
   async listSkills(): Promise<Skill[]> {
     return skillsApi.listSkills(this.call.bind(this))

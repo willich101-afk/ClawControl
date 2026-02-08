@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { OpenClawClient, Message, Session, Agent, Skill, CronJob, AgentFile } from '../lib/openclaw'
+import { OpenClawClient, Message, Session, Agent, Skill, CronJob, AgentFile, CreateAgentParams } from '../lib/openclaw'
 import * as Platform from '../lib/platform'
 
 export interface ToolCall {
@@ -55,8 +55,8 @@ interface AppState {
   setRightPanelTab: (tab: 'skills' | 'crons') => void
 
   // Main View State
-  mainView: 'chat' | 'skill-detail' | 'cron-detail' | 'agent-detail'
-  setMainView: (view: 'chat' | 'skill-detail' | 'cron-detail' | 'agent-detail') => void
+  mainView: 'chat' | 'skill-detail' | 'cron-detail' | 'agent-detail' | 'create-agent'
+  setMainView: (view: 'chat' | 'skill-detail' | 'cron-detail' | 'agent-detail' | 'create-agent') => void
   selectedSkill: Skill | null
   selectedCronJob: CronJob | null
   selectedAgentDetail: AgentDetail | null
@@ -99,6 +99,8 @@ interface AppState {
   agents: Agent[]
   currentAgentId: string | null
   setCurrentAgent: (agentId: string) => void
+  showCreateAgent: () => void
+  createAgent: (params: CreateAgentParams & { model?: string }) => Promise<{ success: boolean; error?: string }>
 
   // Skills & Crons
   skills: Skill[]
@@ -384,6 +386,45 @@ export const useStore = create<AppState>()(
       agents: [],
       currentAgentId: null,
       setCurrentAgent: (agentId) => set({ currentAgentId: agentId }),
+      showCreateAgent: () => set({ mainView: 'create-agent', selectedSkill: null, selectedCronJob: null, selectedAgentDetail: null }),
+      createAgent: async (params) => {
+        const { client } = get()
+        if (!client) return { success: false, error: 'Not connected' }
+
+        try {
+          const result = await client.createAgent({
+            name: params.name,
+            workspace: params.workspace,
+            emoji: params.emoji,
+            avatar: params.avatar
+          })
+
+          if (!result?.ok) {
+            return { success: false, error: 'Server returned an error' }
+          }
+
+          // If a model was specified, update the agent with it
+          if (params.model) {
+            await client.updateAgent({ agentId: result.agentId, model: params.model })
+          }
+
+          // Refresh agents list
+          await get().fetchAgents()
+
+          // Find the newly created agent and navigate to its detail view
+          const newAgent = get().agents.find(a => a.id === result.agentId)
+          if (newAgent) {
+            set({ currentAgentId: result.agentId })
+            await get().selectAgentForDetail(newAgent)
+          } else {
+            set({ mainView: 'chat' })
+          }
+
+          return { success: true }
+        } catch (err: any) {
+          return { success: false, error: err?.message || 'Failed to create agent' }
+        }
+      },
 
       // Skills & Crons
       skills: [],

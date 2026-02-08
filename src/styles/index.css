@@ -3396,3 +3396,139 @@ body.capacitor-mobile .thinking-label {
     gap: var(--space-md);
   }
 }
+
+/* ===== Create Agent View ===== */
+
+.create-agent-title {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: var(--space-lg);
+}
+
+.create-agent-form {
+  max-width: 560px;
+}
+
+.create-agent-form .form-group {
+  margin-bottom: var(--space-lg);
+}
+
+.create-agent-form .required {
+  color: var(--accent-red);
+}
+
+.create-agent-form .emoji-input {
+  max-width: 80px;
+  text-align: center;
+  font-size: 1.25rem;
+}
+
+/* Avatar picker */
+.create-agent-avatar-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-xl);
+}
+
+.create-agent-avatar-picker {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  border: 2px dashed var(--border-default);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  overflow: hidden;
+  transition: all var(--transition-fast);
+}
+
+.create-agent-avatar-picker:hover {
+  border-color: var(--accent-cyan);
+  box-shadow: var(--glow-cyan);
+}
+
+.create-agent-avatar-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.create-agent-avatar-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--text-muted);
+}
+
+.create-agent-avatar-placeholder svg {
+  width: 32px;
+  height: 32px;
+}
+
+.create-agent-avatar-placeholder span {
+  font-size: 0.75rem;
+}
+
+.create-agent-avatar-remove {
+  background: none;
+  border: none;
+  color: var(--accent-red);
+  font-size: 0.8rem;
+  cursor: pointer;
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.create-agent-avatar-remove:hover {
+  text-decoration: underline;
+}
+
+/* Error display */
+.create-agent-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-md);
+  color: var(--accent-red);
+  font-size: 0.875rem;
+  margin-bottom: var(--space-lg);
+}
+
+.create-agent-error svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+/* Action buttons */
+.create-agent-actions {
+  display: flex;
+  gap: var(--space-md);
+  justify-content: flex-end;
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* Create New Agent option in dropdown */
+.create-new-agent-option {
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--accent-cyan);
+  font-weight: 500;
+}
+
+.create-new-agent-option svg {
+  width: 16px;
+  height: 16px;
+}
+
+.create-new-agent-option:hover {
+  background: var(--accent-cyan-subtle);
+}

@@ -20,6 +20,7 @@ export function Sidebar() {
     currentAgentId,
     setCurrentAgent,
     selectAgentForDetail,
+    showCreateAgent,
     unreadCounts
   } = useStore()
 
@@ -142,6 +143,7 @@ export function Sidebar() {
             currentAgent={currentAgent}
             onSelect={setCurrentAgent}
             onOpenDetail={(agent) => selectAgentForDetail(agent)}
+            onCreateNew={showCreateAgent}
           />
         </div>
 
@@ -256,12 +258,14 @@ function AgentSelector({
   agents,
   currentAgent,
   onSelect,
-  onOpenDetail
+  onOpenDetail,
+  onCreateNew
 }: {
   agents: Agent[]
   currentAgent?: Agent
   onSelect: (id: string) => void
   onOpenDetail: (agent: Agent) => void
+  onCreateNew: () => void
 }) {
   const [open, setOpen] = useState(false)
 
@@ -308,6 +312,20 @@ function AgentSelector({
       </div>
 
       <div className="agent-dropdown">
+        <div
+          className="agent-option create-new-agent-option"
+          onClick={() => {
+            onCreateNew()
+            setOpen(false)
+          }}
+        >
+          <div className="agent-avatar small">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </div>
+          <span>Create New Agent</span>
+        </div>
         {agents.map((agent, index) => (
           <div
             key={agent.id || index}

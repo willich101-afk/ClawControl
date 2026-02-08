@@ -94,3 +94,36 @@ export async function setAgentFile(call: RpcCaller, agentId: string, fileName: s
     return false
   }
 }
+
+export interface CreateAgentParams {
+  name: string
+  workspace: string
+  emoji?: string
+  avatar?: string
+}
+
+export interface CreateAgentResult {
+  ok: boolean
+  agentId: string
+  name: string
+  workspace: string
+}
+
+export async function createAgent(call: RpcCaller, params: CreateAgentParams): Promise<CreateAgentResult> {
+  const result = await call<any>('agents.create', {
+    name: params.name,
+    workspace: params.workspace,
+    ...(params.emoji ? { emoji: params.emoji } : {}),
+    ...(params.avatar ? { avatar: params.avatar } : {})
+  })
+  return result
+}
+
+export async function updateAgent(call: RpcCaller, params: { agentId: string; name?: string; workspace?: string; model?: string; avatar?: string }): Promise<boolean> {
+  try {
+    await call<any>('agents.update', params)
+    return true
+  } catch {
+    return false
+  }
+}

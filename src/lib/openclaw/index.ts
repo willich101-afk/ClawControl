@@ -13,3 +13,4 @@ export type {
   CronJob,
   RpcCaller
 } from './types'
+export type { CreateAgentParams, CreateAgentResult } from './agents'
