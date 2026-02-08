@@ -1,5 +1,52 @@
 // OpenClaw Client - Custom Frame-based Protocol (v3)
 
+// Strip ANSI escape sequences (colors, cursor movement, mode switches, OSC, etc.)
+// so terminal output from tool calls and streaming text renders cleanly in the UI.
+// Uses inline regexes to avoid lastIndex state issues with reused global RegExp objects.
+export function stripAnsi(text: string): string {
+  return text
+    // Standard CSI sequences: ESC[ ... final_byte
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+    // OSC sequences: ESC] ... BEL  or  ESC] ... ST(ESC\)
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+    // ESC + single character sequences (charset selection, etc.)
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b[()#][A-Z0-9]/g, '')
+    // Remaining ESC + one character (e.g. ESC>, ESC=, ESCM, etc.)
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b[A-Z=><!*+\-\/]/gi, '')
+    // C1 control codes (0x80-0x9F range, e.g. \x9b as CSI)
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x9b[0-9;?]*[A-Za-z]/g, '')
+    // Bell character
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x07/g, '')
+}
+
+// Extract displayable text from a tool result payload.
+// The server sends result as { content: [{ type: "text", text: "..." }, ...] }
+// or as a plain string (rare). Returns undefined if no text can be extracted.
+function extractToolResultText(result: unknown): string | undefined {
+  if (typeof result === 'string') return result
+  if (!result || typeof result !== 'object') return undefined
+
+  const record = result as Record<string, unknown>
+  const content = Array.isArray(record.content) ? record.content : null
+  if (!content) {
+    // Maybe the result is { text: "..." } or { output: "..." }
+    if (typeof record.text === 'string') return record.text
+    if (typeof record.output === 'string') return record.output
+    return undefined
+  }
+
+  const texts = content
+    .filter((c: any) => c && typeof c === 'object' && typeof c.text === 'string')
+    .map((c: any) => c.text as string)
+  return texts.length > 0 ? texts.join('\n') : undefined
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -137,11 +184,13 @@ export class OpenClawClient {
   private streamStarted = false
   private activeRunId: string | null = null
   private activeSessionKey: string | null = null
+  _debugId = Math.random().toString(36).slice(2, 8)
 
   constructor(url: string, token: string = '', authMode: 'token' | 'password' = 'token') {
     this.url = url
     this.token = token
     this.authMode = authMode
+    console.log('[ClawControl] new OpenClawClient created, debugId:', this._debugId)
   }
 
   // Event handling
@@ -157,7 +206,11 @@ export class OpenClawClient {
   }
 
   private emit(event: string, ...args: unknown[]): void {
-    this.eventHandlers.get(event)?.forEach((handler) => {
+    const handlers = this.eventHandlers.get(event)
+    if (event === 'streamChunk') {
+      console.log('[ClawControl] client.emit(streamChunk) handlerCount:', handlers?.size ?? 0, 'clientId:', this._debugId)
+    }
+    handlers?.forEach((handler) => {
       try {
         handler(...args)
       } catch {
@@ -249,9 +302,18 @@ export class OpenClawClient {
 
   disconnect(): void {
     this.maxReconnectAttempts = 0 // Prevent auto-reconnect
-    this.ws?.close()
+    if (this.ws) {
+      // Null out handlers BEFORE close() so the socket stops processing
+      // messages immediately. ws.close() is async — without this, events
+      // arriving during the CLOSING state still trigger handleMessage.
+      this.ws.onmessage = null
+      this.ws.onclose = null
+      this.ws.onerror = null
+      this.ws.close()
+    }
     this.ws = null
     this.authenticated = false
+    this.resetStreamState()
   }
 
   private async performHandshake(_nonce?: string): Promise<void> {
@@ -366,17 +428,18 @@ export class OpenClawClient {
   }
 
   private extractTextFromContent(content: unknown): string {
-    if (typeof content === 'string') return content
-    if (Array.isArray(content)) {
-      return content
+    let text = ''
+    if (typeof content === 'string') {
+      text = content
+    } else if (Array.isArray(content)) {
+      text = content
         .filter((c: any) => c.type === 'text')
         .map((c: any) => c.text)
         .join('')
+    } else if (content && typeof content === 'object' && 'text' in content) {
+      text = String((content as any).text)
     }
-    if (content && typeof content === 'object' && 'text' in content) {
-      return String((content as any).text)
-    }
-    return ''
+    return stripAnsi(text)
   }
 
   private isHeartbeatContent(text: string): boolean {
@@ -509,6 +572,9 @@ export class OpenClawClient {
   }
 
   private handleNotification(event: string, payload: any): void {
+    if (event === 'agent' && payload.stream === 'assistant') {
+      console.log('[ClawControl] handleNotification agent:assistant clientId:', this._debugId, 'activeStreamSource:', this.activeStreamSource)
+    }
     switch (event) {
       case 'chat':
         if (payload.state === 'delta') {
@@ -521,7 +587,7 @@ export class OpenClawClient {
 
           const rawText = payload.message?.content !== undefined
             ? this.extractTextFromContent(payload.message.content)
-            : (typeof payload.delta === 'string' ? payload.delta : '')
+            : (typeof payload.delta === 'string' ? stripAnsi(payload.delta) : '')
 
           if (rawText && !this.isHeartbeatContent(rawText)) {
             const nextText = this.mergeIncoming(rawText, 'cumulative')
@@ -530,6 +596,13 @@ export class OpenClawClient {
           return
         } else if (payload.state === 'final') {
           this.maybeUpdateRunAndSession(payload.runId, payload.sessionKey)
+
+          // If the agent stream handled this response, lifecycle:end already
+          // emitted streamEnd and reset state. Skip to avoid duplicates.
+          if (this.activeStreamSource === 'agent') {
+            return
+          }
+
           if (payload.message) {
             const text = this.extractTextFromContent(payload.message.content)
             if (text && !this.isHeartbeatContent(text)) {
@@ -548,7 +621,10 @@ export class OpenClawClient {
               })
             }
           }
-          this.emit('streamEnd')
+
+          if (this.streamStarted) {
+            this.emit('streamEnd')
+          }
           this.resetStreamState()
         }
         break
@@ -566,14 +642,14 @@ export class OpenClawClient {
           }
 
           // Prefer canonical cumulative text when available. Delta fields can be inconsistent.
-          const canonicalText = typeof payload.data?.text === 'string' ? payload.data.text : ''
+          const canonicalText = typeof payload.data?.text === 'string' ? stripAnsi(payload.data.text) : ''
           if (canonicalText && !this.isHeartbeatContent(canonicalText)) {
             const nextText = this.mergeIncoming(canonicalText, 'cumulative')
             this.applyStreamText(nextText)
             return
           }
 
-          const deltaText = typeof payload.data?.delta === 'string' ? payload.data.delta : ''
+          const deltaText = typeof payload.data?.delta === 'string' ? stripAnsi(payload.data.delta) : ''
           if (deltaText && !this.isHeartbeatContent(deltaText)) {
             const nextText = this.mergeIncoming(deltaText, 'delta')
             this.applyStreamText(nextText)
@@ -587,12 +663,14 @@ export class OpenClawClient {
           }
 
           const data = payload.data || {}
-          this.emit('toolCall', {
+          const rawResult = extractToolResultText(data.result)
+          const toolPayload = {
             toolCallId: data.toolCallId || data.id || `tool-${Date.now()}`,
             name: data.name || data.toolName || 'unknown',
             phase: data.phase || (data.result !== undefined ? 'result' : 'start'),
-            result: data.result
-          })
+            result: rawResult ? stripAnsi(rawResult) : undefined
+          }
+          this.emit('toolCall', toolPayload)
         } else if (payload.stream === 'lifecycle') {
           // lifecycle frames often arrive before the first assistant delta; capture the canonical session key early.
           this.maybeUpdateRunAndSession(payload.runId, payload.sessionKey)
@@ -722,17 +800,22 @@ export class OpenClawClient {
       }
 
       const rawMessages = messages.map((m: any) => {
-          // Handle nested message structure (common in chat.history)
+          // The server already unwraps transcript lines with parsed.message,
+          // so each m is { role, content, timestamp, ... } directly.
+          // Fall back to nested wrappers for older formats.
           const msg = m.message || m.data || m.entry || m
+          const role: string = msg.role || m.role || 'assistant'
           let rawContent = msg.content ?? msg.body ?? msg.text
           let content = ''
-          let thinking = msg.thinking // Fallback if already parsed
+          let thinking = msg.thinking
 
           if (Array.isArray(rawContent)) {
-            // Content is an array of blocks: [{ type: 'text', text: '...' }, { type: 'thinking', thinking: '...' }]
+            // Content blocks: [{ type: 'text', text: '...' }, { type: 'tool_use', ... }, ...]
+            // Extract text from text/input_text blocks
             content = rawContent
-              .filter((c: any) => c.type === 'text' || (!c.type && c.text))
+              .filter((c: any) => c.type === 'text' || c.type === 'input_text' || c.type === 'output_text' || (!c.type && c.text))
               .map((c: any) => c.text)
+              .filter(Boolean)
               .join('')
 
             // Extract thinking if present
@@ -741,10 +824,24 @@ export class OpenClawClient {
               thinking = thinkingBlock.thinking
             }
 
-            // If no text blocks found, try extracting all text content
+            // For tool_result blocks (user-role internal protocol messages),
+            // extract nested text so these entries aren't silently dropped
             if (!content) {
               content = rawContent
-                .map((c: any) => c.text || c.content || '')
+                .map((c: any) => {
+                  if (typeof c.text === 'string') return c.text
+                  // tool_result blocks can have content as string or array
+                  if (c.type === 'tool_result') {
+                    if (typeof c.content === 'string') return c.content
+                    if (Array.isArray(c.content)) {
+                      return c.content
+                        .filter((b: any) => typeof b?.text === 'string')
+                        .map((b: any) => b.text)
+                        .join('')
+                    }
+                  }
+                  return ''
+                })
                 .filter(Boolean)
                 .join('')
             }
@@ -756,21 +853,30 @@ export class OpenClawClient {
              content = ''
           }
 
-          // Aggressive heartbeat filtering
-          const contentUpper = content.toUpperCase()
-          const isHeartbeat =
-            contentUpper.includes('HEARTBEAT_OK') ||
-            contentUpper.includes('READ HEARTBEAT.MD') ||
-            content.includes('# HEARTBEAT - Event-Driven Status')
+          // Aggressive heartbeat filtering (only for assistant/system messages)
+          if (role === 'assistant' || role === 'system') {
+            const contentUpper = content.toUpperCase()
+            const isHeartbeat =
+              contentUpper.includes('HEARTBEAT_OK') ||
+              contentUpper.includes('READ HEARTBEAT.MD') ||
+              content.includes('# HEARTBEAT - Event-Driven Status')
+            if (isHeartbeat) return null
+          }
 
-          // Filter out items without content (e.g. status updates) or heartbeats
-          if ((!content && !thinking) || isHeartbeat) return null
+          // Skip toolResult protocol messages - these are internal agent steps,
+          // not user-facing chat. Tool output is shown via tool call blocks instead.
+          if (role === 'toolResult') return null
+
+          // Filter out entries without displayable text content.
+          // Assistant messages with only thinking (no text) are intermediate
+          // tool-calling steps that clutter the chat view.
+          if (!content) return null
 
           return {
             id: msg.id || m.id || m.runId || `history-${Math.random()}`,
-            role: msg.role || m.role || 'assistant',
-            content,
-            thinking,
+            role: role === 'user' ? 'user' : role === 'system' ? 'system' : 'assistant',
+            content: stripAnsi(content),
+            thinking: thinking ? stripAnsi(thinking) : thinking,
             timestamp: new Date(msg.timestamp || m.timestamp || msg.ts || m.ts || msg.createdAt || m.createdAt || Date.now()).toISOString()
           }
         }) as (Message | null)[]

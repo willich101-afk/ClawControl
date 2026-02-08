@@ -442,7 +442,13 @@ export const useStore = create<AppState>()(
       },
 
       connect: async () => {
-        const { serverUrl, gatewayToken, client: existingClient } = get()
+        const { serverUrl, gatewayToken, client: existingClient, connecting } = get()
+
+        // Prevent concurrent connect() calls (React StrictMode fires effects twice)
+        if (connecting) {
+          console.log('[ClawControl] connect() skipped — already connecting')
+          return
+        }
 
         // Show settings if URL is not configured
         if (!serverUrl) {
@@ -452,11 +458,20 @@ export const useStore = create<AppState>()(
 
         // Disconnect existing client to prevent duplicate event handling
         if (existingClient) {
+          console.log('[ClawControl] connect() disconnecting existing client')
           existingClient.disconnect()
           set({ client: null })
         }
 
+        // Also kill any stale client surviving across Vite HMR reloads.
+        const stale = (globalThis as any).__clawdeskClient as OpenClawClient | undefined
+        if (stale && stale !== existingClient) {
+          console.log('[ClawControl] connect() disconnecting stale HMR client')
+          try { stale.disconnect() } catch { /* already closed */ }
+        }
+
         set({ connecting: true })
+        console.log('[ClawControl] connect() starting new connection')
 
         try {
           const { authMode } = get()
@@ -473,10 +488,10 @@ export const useStore = create<AppState>()(
               const lastMsg = lastIdx >= 0 ? state.messages[lastIdx] : null
               if (lastMsg && lastMsg.role === 'assistant' && lastMsg.id.startsWith('streaming-')) {
                 replacedStreaming = true
-                const messages = [...state.messages]
-                // Keep accumulated streaming content; adopt server metadata (id, thinking, etc.)
-                messages[lastIdx] = { ...message, content: lastMsg.content }
-                return { messages, isStreaming: false }
+                // Streamed content is already correct. Just stop the streaming state
+                // without replacing the message object — avoids a visual flash from
+                // React re-rendering / DOM replacement.
+                return { isStreaming: false }
               }
 
               const exists = state.messages.some(m => m.id === message.id)
@@ -521,6 +536,7 @@ export const useStore = create<AppState>()(
 
           client.on('streamChunk', (chunkArg: unknown) => {
             const text = String(chunkArg)
+            console.log('[ClawControl] streamChunk received, len:', text.length, 'preview:', JSON.stringify(text.slice(0, 40)))
 
             // Skip empty chunks
             if (!text) return
@@ -623,6 +639,7 @@ export const useStore = create<AppState>()(
           })
 
           await client.connect()
+          ;(globalThis as any).__clawdeskClient = client
           set({ client })
 
           // Fetch initial data
@@ -640,6 +657,9 @@ export const useStore = create<AppState>()(
       disconnect: () => {
         const { client } = get()
         client?.disconnect()
+        if ((globalThis as any).__clawdeskClient === client) {
+          (globalThis as any).__clawdeskClient = null
+        }
         set({ client: null, connected: false })
       },
 
@@ -743,3 +763,14 @@ export const useStore = create<AppState>()(
     }
   )
 )
+
+// Vite HMR: disconnect stale WebSocket connections when modules are hot-replaced.
+// Without this, old module versions keep processing events, causing duplicate streams.
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    const { client } = useStore.getState()
+    if (client) {
+      client.disconnect()
+    }
+  })
+}

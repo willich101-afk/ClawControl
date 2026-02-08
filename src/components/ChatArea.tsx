@@ -1,11 +1,13 @@
-import { useState, useRef, useEffect, Fragment } from 'react'
+import { useState, useRef, useEffect, useMemo, Fragment, memo } from 'react'
 import { useStore, ToolCall } from '../store'
-import { Message } from '../lib/openclaw-client'
+import { Message, stripAnsi } from '../lib/openclaw-client'
 import { format, isSameDay } from 'date-fns'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import rehypeSanitize from 'rehype-sanitize'
+import { marked } from 'marked'
 import logoUrl from '../../build/icon.png'
+
+// Configure marked for chat-friendly rendering: single newlines become <br>,
+// GFM tables/strikethrough enabled, synchronous parsing.
+marked.setOptions({ breaks: true, gfm: true, async: false })
 
 export function ChatArea() {
   const { messages, isStreaming, agents, currentAgentId, activeToolCalls } = useStore()
@@ -104,7 +106,7 @@ function DateSeparator({ date }: { date: Date }) {
   )
 }
 
-function MessageBubble({
+const MessageBubble = memo(function MessageBubble({
   message,
   agentName
 }: {
@@ -162,7 +164,7 @@ function MessageBubble({
       )}
     </div>
   )
-}
+})
 
 function ToolCallBlock({ toolCall }: { toolCall: ToolCall }) {
   const [expanded, setExpanded] = useState(false)
@@ -189,7 +191,7 @@ function ToolCallBlock({ toolCall }: { toolCall: ToolCall }) {
       </button>
       {expanded && toolCall.result && (
         <div className="tool-call-result">
-          <pre>{toolCall.result}</pre>
+          <pre>{stripAnsi(toolCall.result)}</pre>
         </div>
       )}
     </div>
@@ -197,30 +199,9 @@ function ToolCallBlock({ toolCall }: { toolCall: ToolCall }) {
 }
 
 function MessageContent({ content }: { content: string }) {
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeSanitize]}
-      components={{
-        code(props) {
-          const { children, className, node: _node, ...rest } = props
-          const match = /language-(\w+)/.exec(className || '')
-          return match ? (
-            <pre>
-              <div className="code-language">{match[1]}</div>
-              <code className={className} {...rest}>
-                {children}
-              </code>
-            </pre>
-          ) : (
-            <code className={className} {...rest}>
-              {children}
-            </code>
-          )
-        }
-      }}
-    >
-      {content}
-    </ReactMarkdown>
+  const html = useMemo(
+    () => marked.parse(stripAnsi(content), { async: false }) as string,
+    [content]
   )
+  return <div className="markdown-content" dangerouslySetInnerHTML={{ __html: html }} />
 }
