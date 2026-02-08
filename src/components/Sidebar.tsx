@@ -83,10 +83,10 @@ export function Sidebar() {
           <div className="sessions-list">
             {sessions.map((session) => (
               <div
-                key={session.id}
-                className={`session-item ${session.id === currentSessionId ? 'active' : ''}`}
-                onClick={() => setCurrentSession(session.id)}
-                onContextMenu={(e) => handleContextMenu(e, session.id, session.title)}
+                key={session.key || session.id}
+                className={`session-item ${(session.key || session.id) === currentSessionId ? 'active' : ''}`}
+                onClick={() => setCurrentSession(session.key || session.id)}
+                onContextMenu={(e) => handleContextMenu(e, session.key || session.id, session.title)}
               >
                 <div className="session-indicator" />
                 {session.spawned && (
@@ -108,14 +108,14 @@ export function Sidebar() {
                     {formatDistanceToNow(new Date(session.updatedAt), { addSuffix: true })}
                   </div>
                 </div>
-                {unreadCounts[session.id] > 0 && (
-                  <span className="session-badge">{unreadCounts[session.id]}</span>
+                {unreadCounts[session.key || session.id] > 0 && (
+                  <span className="session-badge">{unreadCounts[session.key || session.id]}</span>
                 )}
                 <button
                   className="session-delete"
                   onClick={(e) => {
                     e.stopPropagation()
-                    deleteSession(session.id)
+                    deleteSession(session.key || session.id)
                   }}
                   aria-label="Delete session"
                 >

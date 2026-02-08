@@ -53,7 +53,37 @@ describe('OpenClawClient', () => {
   })
 
   describe('stream handling', () => {
-    it('should prefer assistant stream and ignore chat deltas', () => {
+    it('should stream chat deltas when chat stream is active', () => {
+      const chunkHandler = vi.fn()
+      client.on('streamChunk', chunkHandler)
+
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('chat', { state: 'delta', delta: 'chat-1' })
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('chat', { state: 'delta', delta: 'chat-1chat-2' })
+
+      expect(chunkHandler).toHaveBeenCalledTimes(2)
+      expect(chunkHandler).toHaveBeenNthCalledWith(1, 'chat-1')
+      expect(chunkHandler).toHaveBeenNthCalledWith(2, 'chat-2')
+    })
+
+    it('should ignore chat deltas when agent stream claims first', () => {
+      const chunkHandler = vi.fn()
+      client.on('streamChunk', chunkHandler)
+
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('agent', { stream: 'assistant', data: { delta: 'assistant-1' } })
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('chat', { state: 'delta', delta: 'chat-1' })
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('agent', { stream: 'assistant', data: { delta: 'assistant-2' } })
+
+      expect(chunkHandler).toHaveBeenCalledTimes(2)
+      expect(chunkHandler).toHaveBeenNthCalledWith(1, 'assistant-1')
+      expect(chunkHandler).toHaveBeenNthCalledWith(2, 'assistant-2')
+    })
+
+    it('should ignore agent deltas when chat stream claims first', () => {
       const chunkHandler = vi.fn()
       client.on('streamChunk', chunkHandler)
 
@@ -62,13 +92,11 @@ describe('OpenClawClient', () => {
       // @ts-expect-error - accessing private method for testing
       client.handleNotification('agent', { stream: 'assistant', data: { delta: 'assistant-1' } })
       // @ts-expect-error - accessing private method for testing
-      client.handleNotification('chat', { state: 'delta', delta: 'chat-2' })
-      // @ts-expect-error - accessing private method for testing
-      client.handleNotification('agent', { stream: 'assistant', data: { delta: 'assistant-2' } })
+      client.handleNotification('chat', { state: 'delta', delta: 'chat-1chat-2' })
 
       expect(chunkHandler).toHaveBeenCalledTimes(2)
-      expect(chunkHandler).toHaveBeenNthCalledWith(1, 'assistant-1')
-      expect(chunkHandler).toHaveBeenNthCalledWith(2, 'assistant-2')
+      expect(chunkHandler).toHaveBeenNthCalledWith(1, 'chat-1')
+      expect(chunkHandler).toHaveBeenNthCalledWith(2, 'chat-2')
     })
 
     it('should de-duplicate cumulative assistant chunks', () => {
@@ -90,7 +118,21 @@ describe('OpenClawClient', () => {
       expect(chunkHandler).toHaveBeenNthCalledWith(3, ' see it')
     })
 
-    it('should end on assistant lifecycle complete and suppress duplicate chat final', () => {
+    it('should replace stream content on rewind/rewrite', () => {
+      const chunkHandler = vi.fn()
+      client.on('streamChunk', chunkHandler)
+
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('agent', { runId: 'r1', stream: 'assistant', data: { text: 'Hey! Just came online. Let me' } })
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('agent', { runId: 'r1', stream: 'assistant', data: { text: 'get my bearings real quick.' } })
+
+      expect(chunkHandler).toHaveBeenCalledTimes(2)
+      expect(chunkHandler).toHaveBeenNthCalledWith(1, 'Hey! Just came online. Let me')
+      expect(chunkHandler).toHaveBeenNthCalledWith(2, { kind: 'replace', text: 'get my bearings real quick.' })
+    })
+
+    it('should end on assistant lifecycle complete and still process chat final', () => {
       const streamEndHandler = vi.fn()
       const messageHandler = vi.fn()
       client.on('streamEnd', streamEndHandler)
@@ -106,8 +148,9 @@ describe('OpenClawClient', () => {
         message: { id: 'msg-1', role: 'assistant', content: 'duplicate-final' }
       })
 
-      expect(streamEndHandler).toHaveBeenCalledTimes(1)
-      expect(messageHandler).not.toHaveBeenCalled()
+      // Lifecycle end + chat final can both arrive; chat final is still useful for canonical IDs.
+      expect(streamEndHandler).toHaveBeenCalledTimes(2)
+      expect(messageHandler).toHaveBeenCalledTimes(1)
     })
 
     it('should still process chat final when assistant stream is not active', () => {
@@ -143,6 +186,7 @@ describe('OpenClawClient', () => {
       expect(sessions.length).toBeGreaterThan(0)
       expect(sessions[0]).toHaveProperty('id')
       expect(sessions[0]).toHaveProperty('title')
+      expect(sessions[0].id).toBe(sessions[0].key)
     })
   })
 

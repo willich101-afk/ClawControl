@@ -319,20 +319,25 @@ export const useStore = create<AppState>()(
         })
       },
       createNewSession: async () => {
-        // Don't create local fake session IDs. New sessions are created by the server on first send.
-        set({
-          currentSessionId: null,
+        const { client, currentAgentId } = get()
+        if (!client) return
+
+        const session = await client.createSession(currentAgentId || undefined)
+        const sessionId = session.key || session.id
+        set((state) => ({
+          sessions: [session, ...state.sessions],
+          currentSessionId: sessionId,
           messages: [],
           isStreaming: false,
           hadStreamChunks: false,
           streamingSessionId: null
-        })
+        }))
       },
       deleteSession: (sessionId) => {
         const { client } = get()
         client?.deleteSession(sessionId)
         set((state) => ({
-          sessions: state.sessions.filter((s) => s.id !== sessionId),
+          sessions: state.sessions.filter((s) => (s.key || s.id) !== sessionId),
           currentSessionId: state.currentSessionId === sessionId ? null : state.currentSessionId
         }))
       },
@@ -343,7 +348,7 @@ export const useStore = create<AppState>()(
         await client.updateSession(sessionId, { label })
         set((state) => ({
           sessions: state.sessions.map((s) =>
-            s.id === sessionId ? { ...s, title: label } : s
+            (s.key || s.id) === sessionId ? { ...s, title: label } : s
           )
         }))
       },
@@ -354,12 +359,12 @@ export const useStore = create<AppState>()(
         const session = await client.spawnSession(agentId, prompt)
         set((state) => ({
           sessions: [session, ...state.sessions],
-          currentSessionId: session.id,
+          currentSessionId: session.key || session.id,
           messages: []
         }))
 
         // Load any existing messages for the spawned session
-        const messages = await client.getSessionMessages(session.id)
+        const messages = await client.getSessionMessages(session.key || session.id)
         if (messages.length > 0) {
           set({ messages })
         }
@@ -591,39 +596,22 @@ export const useStore = create<AppState>()(
         const { client, currentSessionId, thinkingEnabled, currentAgentId } = get()
         if (!client || !content.trim()) return
 
-        const selectedSessionId = currentSessionId
-        const requestedSessionId = selectedSessionId || `session-${Date.now()}`
-        const now = new Date().toISOString()
-
-        // For a brand-new chat, add a placeholder session immediately.
-        if (!selectedSessionId) {
-          set((state) => {
-            if (state.sessions.some((s) => s.id === requestedSessionId)) {
-              return { currentSessionId: requestedSessionId }
-            }
-
-            return {
-              currentSessionId: requestedSessionId,
-              sessions: [
-                {
-                  id: requestedSessionId,
-                  key: requestedSessionId,
-                  title: 'New Chat',
-                  agentId: currentAgentId || undefined,
-                  createdAt: now,
-                  updatedAt: now
-                },
-                ...state.sessions
-              ]
-            }
-          })
+        let sessionId = currentSessionId
+        if (!sessionId) {
+          const session = await client.createSession(currentAgentId || undefined)
+          sessionId = session.key || session.id
+          set((state) => ({
+            sessions: [session, ...state.sessions],
+            currentSessionId: sessionId,
+            messages: []
+          }))
         }
 
         // Reset streaming state so user can always send follow-up messages
         set({
           isStreaming: false,
           hadStreamChunks: false,
-          streamingSessionId: requestedSessionId
+          streamingSessionId: sessionId
         })
 
         // Add user message immediately
@@ -637,66 +625,12 @@ export const useStore = create<AppState>()(
 
         // Send to server
         try {
-          const response = await client.sendMessage({
-            sessionId: requestedSessionId,
+          await client.sendMessage({
+            sessionId: sessionId,
             content,
             agentId: currentAgentId || undefined,
             thinking: thinkingEnabled
           })
-
-          const serverKey = response.sessionKey?.trim() || requestedSessionId
-
-          set((state) => {
-            const replacementId = selectedSessionId || requestedSessionId
-            const serverIdx = state.sessions.findIndex((s) => s.id === serverKey)
-
-            if (serverIdx >= 0) {
-              const dedupedSessions = replacementId !== serverKey
-                ? state.sessions.filter((s) => s.id !== replacementId)
-                : state.sessions
-              return {
-                currentSessionId: serverKey,
-                streamingSessionId: serverKey,
-                sessions: dedupedSessions
-              }
-            }
-
-            const replaceIdx = state.sessions.findIndex((s) => s.id === replacementId)
-            if (replaceIdx >= 0) {
-              const sessionsCopy = [...state.sessions]
-              sessionsCopy[replaceIdx] = {
-                ...sessionsCopy[replaceIdx],
-                id: serverKey,
-                key: serverKey,
-                updatedAt: now
-              }
-
-              return {
-                currentSessionId: serverKey,
-                streamingSessionId: serverKey,
-                sessions: sessionsCopy
-              }
-            }
-
-            return {
-              currentSessionId: serverKey,
-              streamingSessionId: serverKey,
-              sessions: [
-                {
-                  id: serverKey,
-                  key: serverKey,
-                  title: 'New Chat',
-                  agentId: currentAgentId || undefined,
-                  createdAt: now,
-                  updatedAt: now
-                },
-                ...state.sessions
-              ]
-            }
-          })
-
-          // Sync canonical titles/metadata from the server.
-          get().fetchSessions().catch(() => {})
         } catch {
           // If send fails, stop streaming state so UI remains usable.
           set({ isStreaming: false, streamingSessionId: null })

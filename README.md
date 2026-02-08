@@ -262,6 +262,96 @@ On connect, the server sends a `connect.challenge` event. The client responds wi
 - `cron.get` - Get full cron job details
 - `cron.update` - Update job status (active/paused)
 
+### Full Method List (From `hello-ok`)
+
+This is the complete set of RPC method names reported by the server in `hello-ok.payload.features.methods`. This list can vary by server version and configuration.
+
+```text
+health
+logs.tail
+channels.status
+channels.logout
+status
+usage.status
+usage.cost
+tts.status
+tts.providers
+tts.enable
+tts.disable
+tts.convert
+tts.setProvider
+config.get
+config.set
+config.apply
+config.patch
+config.schema
+exec.approvals.get
+exec.approvals.set
+exec.approvals.node.get
+exec.approvals.node.set
+exec.approval.request
+exec.approval.resolve
+wizard.start
+wizard.next
+wizard.cancel
+wizard.status
+talk.mode
+models.list
+agents.list
+agents.files.list
+agents.files.get
+agents.files.set
+skills.status
+skills.bins
+skills.install
+skills.update
+update.run
+voicewake.get
+voicewake.set
+sessions.list
+sessions.preview
+sessions.patch
+sessions.reset
+sessions.delete
+sessions.compact
+last-heartbeat
+set-heartbeats
+wake
+node.pair.request
+node.pair.list
+node.pair.approve
+node.pair.reject
+node.pair.verify
+device.pair.list
+device.pair.approve
+device.pair.reject
+device.token.rotate
+device.token.revoke
+node.rename
+node.list
+node.describe
+node.invoke
+node.invoke.result
+node.event
+cron.list
+cron.status
+cron.add
+cron.update
+cron.remove
+cron.run
+cron.runs
+system-presence
+system-event
+send
+agent
+agent.identity.get
+agent.wait
+browser.request
+chat.history
+chat.abort
+chat.send
+```
+
 ### Streaming Events
 
 Chat responses stream via `event` frames:

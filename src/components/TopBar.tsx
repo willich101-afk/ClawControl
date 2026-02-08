@@ -14,7 +14,7 @@ export function TopBar() {
     setShowSettings
   } = useStore()
 
-  const currentSession = sessions.find((s) => s.id === currentSessionId)
+  const currentSession = sessions.find((s) => (s.key || s.id) === currentSessionId)
   const sessionName = currentSession?.title || 'New Chat'
 
   return (

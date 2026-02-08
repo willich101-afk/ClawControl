@@ -131,8 +131,11 @@ export class OpenClawClient {
   private reconnectDelay = 1000
   private authenticated = false
   private activeStreamSource: 'chat' | 'agent' | null = null
-  private suppressChatFinal = false
   private assistantStreamText = ''
+  private assistantStreamMode: 'delta' | 'cumulative' | null = null
+  private streamStarted = false
+  private activeRunId: string | null = null
+  private activeSessionKey: string | null = null
 
   constructor(url: string, token: string = '', authMode: 'token' | 'password' = 'token') {
     this.url = url
@@ -192,15 +195,37 @@ export class OpenClawClient {
 
         this.ws.onclose = () => {
           this.authenticated = false
-          this.activeStreamSource = null
-          this.suppressChatFinal = false
-          this.assistantStreamText = ''
+          this.resetStreamState()
           this.emit('disconnected')
           this.attemptReconnect()
         }
 
         this.ws.onmessage = (event) => {
-          this.handleMessage(event.data, resolve, reject)
+          const incoming = (event as MessageEvent).data
+          if (typeof incoming === 'string') {
+            this.handleMessage(incoming, resolve, reject)
+            return
+          }
+
+          // Some runtimes deliver WebSocket frames as Blob/ArrayBuffer.
+          if (incoming instanceof Blob) {
+            incoming.text().then((text) => {
+              this.handleMessage(text, resolve, reject)
+            }).catch(() => {})
+            return
+          }
+
+          if (incoming instanceof ArrayBuffer) {
+            try {
+              const text = new TextDecoder().decode(new Uint8Array(incoming))
+              this.handleMessage(text, resolve, reject)
+            } catch {
+              // ignore
+            }
+            return
+          }
+
+          // Unknown frame type; ignore.
         }
       } catch (error) {
         reject(error)
@@ -358,74 +383,150 @@ export class OpenClawClient {
     return upper.includes('HEARTBEAT_OK') || upper.includes('HEARTBEAT.MD')
   }
 
-  // Some gateways send cumulative assistant deltas (full text-so-far) instead of strict increments.
-  // Normalize both formats to an append-only chunk for the UI layer.
-  private toAssistantIncrement(incoming: string): string {
-    if (!incoming) return ''
+  private resetStreamState(): void {
+    this.activeStreamSource = null
+    this.assistantStreamText = ''
+    this.assistantStreamMode = null
+    this.streamStarted = false
+    this.activeRunId = null
+    this.activeSessionKey = null
+  }
+
+  private maybeUpdateRunAndSession(runId?: unknown, sessionKey?: unknown): void {
+    if (typeof runId === 'string' && this.activeRunId && this.activeRunId !== runId) {
+      // A new run started before we observed a clean end. Treat as a reset.
+      this.resetStreamState()
+    }
+
+    if (typeof runId === 'string' && !this.activeRunId) {
+      this.activeRunId = runId
+    }
+
+    if (typeof sessionKey === 'string' && sessionKey && this.activeSessionKey !== sessionKey) {
+      this.activeSessionKey = sessionKey
+      this.emit('streamSessionKey', { runId, sessionKey })
+    }
+  }
+
+  private ensureStream(source: 'chat' | 'agent', modeHint: 'delta' | 'cumulative', runId?: unknown): void {
+    this.maybeUpdateRunAndSession(runId)
+
+    if (this.activeStreamSource === null) {
+      this.activeStreamSource = source
+    }
+
+    if (this.activeStreamSource !== source) {
+      return
+    }
+
+    if (!this.assistantStreamMode) {
+      this.assistantStreamMode = modeHint
+    }
+
+    if (!this.streamStarted) {
+      this.streamStarted = true
+      this.emit('streamStart')
+    }
+  }
+
+  private applyStreamText(nextText: string): void {
+    if (!nextText) return
 
     const previous = this.assistantStreamText
+    if (nextText === previous) return
+
     if (!previous) {
-      this.assistantStreamText = incoming
+      this.assistantStreamText = nextText
+      this.emit('streamChunk', nextText)
+      return
+    }
+
+    if (nextText.startsWith(previous)) {
+      const append = nextText.slice(previous.length)
+      this.assistantStreamText = nextText
+      if (append) {
+        this.emit('streamChunk', append)
+      }
+      return
+    }
+
+    // Stream "rewind"/rewrite: replace the entire content in the UI.
+    this.assistantStreamText = nextText
+    this.emit('streamChunk', { kind: 'replace', text: nextText })
+  }
+
+  private mergeIncoming(incoming: string, modeHint: 'delta' | 'cumulative'): string {
+    const previous = this.assistantStreamText
+
+    if (modeHint === 'cumulative') {
       return incoming
     }
 
-    if (incoming === previous || previous.endsWith(incoming)) {
-      return ''
+    // Some servers send cumulative strings even in "delta" fields.
+    if (previous && incoming.startsWith(previous)) {
+      return incoming
     }
 
-    if (incoming.startsWith(previous)) {
-      const append = incoming.slice(previous.length)
-      this.assistantStreamText = incoming
-      return append
+    // Some servers repeat a suffix; avoid regressions.
+    if (previous && previous.endsWith(incoming)) {
+      return previous
     }
 
     // Fallback for partial overlap between chunk boundaries.
-    const maxOverlap = Math.min(previous.length, incoming.length)
-    let overlap = 0
-    for (let i = maxOverlap; i > 0; i--) {
-      if (previous.endsWith(incoming.slice(0, i))) {
-        overlap = i
-        break
+    if (previous) {
+      const maxOverlap = Math.min(previous.length, incoming.length)
+      for (let i = maxOverlap; i > 0; i--) {
+        if (previous.endsWith(incoming.slice(0, i))) {
+          return previous + incoming.slice(i)
+        }
       }
     }
 
-    const append = incoming.slice(overlap)
-    this.assistantStreamText = previous + append
-    return append
+    return previous + incoming
   }
 
   private handleNotification(event: string, payload: any): void {
     switch (event) {
       case 'chat':
         if (payload.state === 'delta') {
-          // Assistant stream is canonical. Ignore chat deltas to avoid duplicate output.
-          return
-        } else if (payload.state === 'final') {
-          // If assistant stream was used, chat final is duplicate; ignore it.
-          if (this.suppressChatFinal || this.activeStreamSource === 'agent') {
-            if (this.activeStreamSource === 'agent') {
-              this.activeStreamSource = null
-              this.assistantStreamText = ''
-              this.emit('streamEnd')
-            }
-            this.suppressChatFinal = false
+          this.maybeUpdateRunAndSession(payload.runId, payload.sessionKey)
+          this.ensureStream('chat', 'cumulative', payload.runId)
+          if (this.activeStreamSource !== 'chat') {
+            // Another stream type already claimed this response.
             return
           }
 
+          const rawText = payload.message?.content !== undefined
+            ? this.extractTextFromContent(payload.message.content)
+            : (typeof payload.delta === 'string' ? payload.delta : '')
+
+          if (rawText && !this.isHeartbeatContent(rawText)) {
+            const nextText = this.mergeIncoming(rawText, 'cumulative')
+            this.applyStreamText(nextText)
+          }
+          return
+        } else if (payload.state === 'final') {
+          this.maybeUpdateRunAndSession(payload.runId, payload.sessionKey)
           if (payload.message) {
             const text = this.extractTextFromContent(payload.message.content)
             if (text && !this.isHeartbeatContent(text)) {
+              const id =
+                (typeof payload.message.id === 'string' && payload.message.id) ||
+                (typeof payload.runId === 'string' && payload.runId) ||
+                `msg-${Date.now()}`
+              const tsRaw = payload.message.timestamp
+              const tsNum = typeof tsRaw === 'number' ? tsRaw : NaN
+              const tsMs = Number.isFinite(tsNum) ? (tsNum > 1e12 ? tsNum : tsNum * 1000) : Date.now()
               this.emit('message', {
-                id: payload.message.id,
+                id,
                 role: payload.message.role,
                 content: text,
-                timestamp: new Date().toISOString()
+                timestamp: new Date(tsMs).toISOString()
               })
             }
           }
-          this.activeStreamSource = null
-          this.assistantStreamText = ''
           this.emit('streamEnd')
+          this.resetStreamState()
         }
         break
       case 'presence':
@@ -433,32 +534,36 @@ export class OpenClawClient {
         break
       case 'agent':
         if (payload.stream === 'assistant') {
+          this.maybeUpdateRunAndSession(payload.runId, payload.sessionKey)
+          const hasCanonicalText = typeof payload.data?.text === 'string'
+          this.ensureStream('agent', hasCanonicalText ? 'cumulative' : 'delta', payload.runId)
           if (this.activeStreamSource !== 'agent') {
-            this.assistantStreamText = ''
+            // Another stream type already claimed this response.
+            return
           }
-          this.activeStreamSource = 'agent'
-          this.suppressChatFinal = true
 
-          // payload.data is usually { text: string, delta: string }
-          const rawChunk =
-            typeof payload.data?.delta === 'string'
-              ? payload.data.delta
-              : (typeof payload.data?.text === 'string' ? payload.data.text : '')
+          // Prefer canonical cumulative text when available. Delta fields can be inconsistent.
+          const canonicalText = typeof payload.data?.text === 'string' ? payload.data.text : ''
+          if (canonicalText && !this.isHeartbeatContent(canonicalText)) {
+            const nextText = this.mergeIncoming(canonicalText, 'cumulative')
+            this.applyStreamText(nextText)
+            return
+          }
 
-          if (typeof rawChunk === 'string' && !this.isHeartbeatContent(rawChunk)) {
-            const append = this.toAssistantIncrement(rawChunk)
-            if (append) {
-              this.emit('streamChunk', append)
-            }
+          const deltaText = typeof payload.data?.delta === 'string' ? payload.data.delta : ''
+          if (deltaText && !this.isHeartbeatContent(deltaText)) {
+            const nextText = this.mergeIncoming(deltaText, 'delta')
+            this.applyStreamText(nextText)
           }
         } else if (payload.stream === 'lifecycle') {
+          // lifecycle frames often arrive before the first assistant delta; capture the canonical session key early.
+          this.maybeUpdateRunAndSession(payload.runId, payload.sessionKey)
           const phase = payload.data?.phase
           const state = payload.data?.state
           if (phase === 'end' || phase === 'error' || state === 'complete' || state === 'error') {
-            if (this.activeStreamSource === 'agent') {
-              this.activeStreamSource = null
-              this.assistantStreamText = ''
+            if (this.activeStreamSource === 'agent' && this.streamStarted) {
               this.emit('streamEnd')
+              this.resetStreamState()
             }
           }
         }
@@ -466,6 +571,29 @@ export class OpenClawClient {
       default:
         this.emit(event, payload)
     }
+  }
+
+  private resolveSessionKey(raw: any): string | null {
+    const key =
+      raw?.key ||
+      raw?.sessionKey ||
+      raw?.id ||
+      raw?.session?.key ||
+      raw?.session?.sessionKey ||
+      raw?.session?.id
+    return typeof key === 'string' && key.trim() ? key.trim() : null
+  }
+
+  private toIsoTimestamp(ts: unknown): string {
+    if (typeof ts === 'number' && Number.isFinite(ts)) {
+      const ms = ts > 1e12 ? ts : ts * 1000
+      return new Date(ms).toISOString()
+    }
+    if (typeof ts === 'string' || ts instanceof Date) {
+      const d = new Date(ts as any)
+      if (!Number.isNaN(d.getTime())) return d.toISOString()
+    }
+    return new Date().toISOString()
   }
 
   // API Methods
@@ -478,7 +606,7 @@ export class OpenClawClient {
       })
       
       const sessions = Array.isArray(result) ? result : (result?.sessions || [])
-      return sessions.map((s: any) => ({
+      return (Array.isArray(sessions) ? sessions : []).map((s: any) => ({
         id: s.key || s.id || `session-${Math.random()}`,
         key: s.key || s.id,
         title: s.title || s.label || s.key || s.id || 'New Chat',
@@ -518,13 +646,14 @@ export class OpenClawClient {
   async spawnSession(agentId: string, prompt?: string): Promise<Session> {
     const result = await this.call<any>('sessions.spawn', { agentId, prompt })
     const s = result?.session || result || {}
+    const key = this.resolveSessionKey(s) || `spawned-${Date.now()}`
     return {
-      id: s.key || s.id || `spawned-${Date.now()}`,
-      key: s.key || s.id || `spawned-${Date.now()}`,
-      title: s.title || s.label || `Subagent: ${agentId}`,
+      id: key,
+      key,
+      title: s.title || s.label || key,
       agentId: s.agentId || agentId,
-      createdAt: new Date(s.createdAt || Date.now()).toISOString(),
-      updatedAt: new Date(s.updatedAt || s.createdAt || Date.now()).toISOString(),
+      createdAt: this.toIsoTimestamp(s.createdAt ?? Date.now()),
+      updatedAt: this.toIsoTimestamp(s.updatedAt ?? s.createdAt ?? Date.now()),
       spawned: true,
       parentSessionId: s.parentSessionId || s.parentKey || undefined
     }
@@ -625,9 +754,7 @@ export class OpenClawClient {
       idempotencyKey
     }
 
-    if (params.sessionId) {
-      payload.sessionKey = params.sessionId
-    }
+    payload.sessionKey = params.sessionId || 'agent:main:main'
 
     if (params.thinking) {
       payload.thinking = 'normal'
