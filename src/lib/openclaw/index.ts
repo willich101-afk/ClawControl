@@ -14,3 +14,4 @@ export type {
   RpcCaller
 } from './types'
 export type { CreateAgentParams, CreateAgentResult } from './agents'
+export { buildIdentityContent } from './agents'

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { OpenClawClient, Message, Session, Agent, Skill, CronJob, AgentFile, CreateAgentParams } from '../lib/openclaw'
+import { OpenClawClient, Message, Session, Agent, Skill, CronJob, AgentFile, CreateAgentParams, buildIdentityContent } from '../lib/openclaw'
 import * as Platform from '../lib/platform'
 
 export interface ToolCall {
@@ -392,25 +392,65 @@ export const useStore = create<AppState>()(
         if (!client) return { success: false, error: 'Not connected' }
 
         try {
+          // 1. Patch config to add the agent (this triggers a server restart)
           const result = await client.createAgent({
             name: params.name,
             workspace: params.workspace,
-            model: params.model,
-            emoji: params.emoji,
-            avatar: params.avatar
+            model: params.model
           })
 
           if (!result?.ok) {
             return { success: false, error: 'Server returned an error' }
           }
 
-          // Refresh agents list
+          const agentId = result.agentId
+          const needsIdentity = params.name || params.emoji || params.avatar
+
+          // 2. config.patch triggers a server restart via SIGUSR1.
+          //    Wait for the client to reconnect so the server knows about
+          //    the new agent before we try to write files or fetch agents.
+          await new Promise<void>((resolve) => {
+            let resolved = false
+            const onConnected = () => {
+              if (resolved) return
+              resolved = true
+              client.off('connected', onConnected)
+              resolve()
+            }
+            client.on('connected', onConnected)
+
+            // Safety timeout: if no reconnect within 15s, continue anyway
+            setTimeout(() => {
+              if (!resolved) {
+                resolved = true
+                client.off('connected', onConnected)
+                console.warn('[ClawControl] createAgent: timed out waiting for reconnect')
+                resolve()
+              }
+            }, 15000)
+          })
+
+          // 3. Now that the server has restarted with the new config,
+          //    write IDENTITY.md with name/emoji/avatar
+          if (needsIdentity) {
+            const content = buildIdentityContent({
+              name: params.name,
+              emoji: params.emoji,
+              avatar: params.avatar
+            })
+            try {
+              await client.setAgentFile(agentId, 'IDENTITY.md', content)
+            } catch (err) {
+              console.warn('[ClawControl] Failed to write IDENTITY.md:', err)
+            }
+          }
+
+          // 4. Refresh agents list and navigate to detail view
           await get().fetchAgents()
 
-          // Find the newly created agent and navigate to its detail view
-          const newAgent = get().agents.find(a => a.id === result.agentId)
+          const newAgent = get().agents.find(a => a.id === agentId)
           if (newAgent) {
-            set({ currentAgentId: result.agentId })
+            set({ currentAgentId: agentId })
             await get().selectAgentForDetail(newAgent)
           } else {
             set({ mainView: 'chat' })
