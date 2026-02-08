@@ -10,7 +10,11 @@ import logoUrl from '../../build/icon.png'
 marked.setOptions({ breaks: true, gfm: true, async: false })
 
 export function ChatArea() {
-  const { messages, isStreaming, hadStreamChunks, agents, currentAgentId, activeToolCalls } = useStore()
+  const { messages: allMessages, isStreaming, hadStreamChunks, agents, currentAgentId, activeToolCalls } = useStore()
+  const messages = useMemo(
+    () => allMessages.filter((m) => m.role !== 'system'),
+    [allMessages]
+  )
   const chatEndRef = useRef<HTMLDivElement>(null)
   const currentAgent = agents.find((a) => a.id === currentAgentId)
 
