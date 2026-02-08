@@ -98,6 +98,7 @@ export async function setAgentFile(call: RpcCaller, agentId: string, fileName: s
 export interface CreateAgentParams {
   name: string
   workspace: string
+  model?: string
   emoji?: string
   avatar?: string
 }
@@ -109,21 +110,105 @@ export interface CreateAgentResult {
   workspace: string
 }
 
-export async function createAgent(call: RpcCaller, params: CreateAgentParams): Promise<CreateAgentResult> {
-  const result = await call<any>('agents.create', {
-    name: params.name,
-    workspace: params.workspace,
-    ...(params.emoji ? { emoji: params.emoji } : {}),
-    ...(params.avatar ? { avatar: params.avatar } : {})
-  })
-  return result
+// Normalize agent name to a safe ID (mirrors server-side normalizeAgentId)
+function normalizeAgentId(name: string): string {
+  const trimmed = name.trim()
+  if (!trimmed) return 'main'
+  // If already valid, just lowercase
+  if (/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(trimmed)) {
+    return trimmed.toLowerCase()
+  }
+  // Collapse invalid chars to hyphens
+  const normalized = trimmed
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '')
+    .slice(0, 64)
+  return normalized || 'main'
 }
 
-export async function updateAgent(call: RpcCaller, params: { agentId: string; name?: string; workspace?: string; model?: string; avatar?: string }): Promise<boolean> {
-  try {
-    await call<any>('agents.update', params)
-    return true
-  } catch {
-    return false
+interface ConfigSnapshot {
+  config: any
+  hash: string
+}
+
+async function getConfig(call: RpcCaller): Promise<ConfigSnapshot> {
+  const result = await call<any>('config.get', {})
+  return { config: result.config || result, hash: result.hash || '' }
+}
+
+async function patchConfig(call: RpcCaller, raw: string, baseHash: string): Promise<any> {
+  return call<any>('config.patch', { raw, baseHash })
+}
+
+export async function createAgent(call: RpcCaller, params: CreateAgentParams): Promise<CreateAgentResult> {
+  // 1. Get current config and hash
+  const { config, hash } = await getConfig(call)
+
+  // 2. Validate the agent ID
+  const agentId = normalizeAgentId(params.name)
+  if (agentId === 'main') {
+    throw new Error('"main" is reserved and cannot be used as an agent name')
+  }
+
+  // 3. Build the existing agents list
+  const existingList: any[] = config?.agents?.list || []
+
+  // Check for duplicates
+  const exists = existingList.some((a: any) => {
+    const id = normalizeAgentId(a.id || a.name || '')
+    return id === agentId
+  })
+  if (exists) {
+    throw new Error(`Agent "${agentId}" already exists`)
+  }
+
+  // 4. Build the new agent config entry
+  const newAgent: any = {
+    id: agentId,
+    name: params.name.trim(),
+    workspace: params.workspace.trim()
+  }
+  if (params.model) {
+    newAgent.model = params.model
+  }
+
+  // 5. Patch config with the new agents list
+  const newList = [...existingList, newAgent]
+  const patch = { agents: { ...config?.agents, list: newList } }
+  await patchConfig(call, JSON.stringify(patch), hash)
+
+  // 6. If emoji or avatar provided, write them to IDENTITY.md via agents.files.set
+  if (params.emoji || params.avatar) {
+    const identityLines: string[] = [
+      '',
+      `- Name: ${params.name.trim()}`
+    ]
+    if (params.emoji) {
+      identityLines.push(`- Emoji: ${params.emoji}`)
+    }
+    if (params.avatar) {
+      identityLines.push(`- Avatar: ${params.avatar}`)
+    }
+    identityLines.push('')
+
+    try {
+      await call<any>('agents.files.set', {
+        agentId,
+        name: 'IDENTITY.md',
+        content: identityLines.join('\n')
+      })
+    } catch {
+      // Identity write failed - agent was still created in config
+      console.warn('[ClawControl] Failed to write IDENTITY.md for new agent:', agentId)
+    }
+  }
+
+  return {
+    ok: true,
+    agentId,
+    name: params.name.trim(),
+    workspace: params.workspace.trim()
   }
 }

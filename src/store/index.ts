@@ -100,7 +100,7 @@ interface AppState {
   currentAgentId: string | null
   setCurrentAgent: (agentId: string) => void
   showCreateAgent: () => void
-  createAgent: (params: CreateAgentParams & { model?: string }) => Promise<{ success: boolean; error?: string }>
+  createAgent: (params: CreateAgentParams) => Promise<{ success: boolean; error?: string }>
 
   // Skills & Crons
   skills: Skill[]
@@ -395,17 +395,13 @@ export const useStore = create<AppState>()(
           const result = await client.createAgent({
             name: params.name,
             workspace: params.workspace,
+            model: params.model,
             emoji: params.emoji,
             avatar: params.avatar
           })
 
           if (!result?.ok) {
             return { success: false, error: 'Server returned an error' }
-          }
-
-          // If a model was specified, update the agent with it
-          if (params.model) {
-            await client.updateAgent({ agentId: result.agentId, model: params.model })
           }
 
           // Refresh agents list
