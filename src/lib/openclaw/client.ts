@@ -33,6 +33,7 @@ export class OpenClawClient {
   private streamStarted = false
   private activeRunId: string | null = null
   private activeSessionKey: string | null = null
+  private primarySessionKey: string | null = null
   _debugId = Math.random().toString(36).slice(2, 8)
 
   constructor(url: string, token: string = '', authMode: 'token' | 'password' = 'token') {
@@ -286,14 +287,11 @@ export class OpenClawClient {
     this.streamStarted = false
     this.activeRunId = null
     this.activeSessionKey = null
+    this.primarySessionKey = null
   }
 
   private maybeUpdateRunAndSession(runId?: unknown, sessionKey?: unknown): void {
-    if (typeof runId === 'string' && this.activeRunId && this.activeRunId !== runId) {
-      // A new run started before we observed a clean end. Treat as a reset.
-      this.resetStreamState()
-    }
-
+    // No longer reset on runId mismatch — primary session gate filters subagent events.
     if (typeof runId === 'string' && !this.activeRunId) {
       this.activeRunId = runId
     }
@@ -321,7 +319,7 @@ export class OpenClawClient {
 
     if (!this.streamStarted) {
       this.streamStarted = true
-      this.emit('streamStart')
+      this.emit('streamStart', { sessionKey: this.activeSessionKey })
     }
   }
 
@@ -331,9 +329,11 @@ export class OpenClawClient {
     const previous = this.assistantStreamText
     if (nextText === previous) return
 
+    const sk = this.activeSessionKey
+
     if (!previous) {
       this.assistantStreamText = nextText
-      this.emit('streamChunk', nextText)
+      this.emit('streamChunk', { text: nextText, sessionKey: sk })
       return
     }
 
@@ -341,7 +341,7 @@ export class OpenClawClient {
       const append = nextText.slice(previous.length)
       this.assistantStreamText = nextText
       if (append) {
-        this.emit('streamChunk', append)
+        this.emit('streamChunk', { text: append, sessionKey: sk })
       }
       return
     }
@@ -349,7 +349,7 @@ export class OpenClawClient {
     // New content block — accumulate rather than replace.
     const separator = '\n\n'
     this.assistantStreamText = this.assistantStreamText + separator + nextText
-    this.emit('streamChunk', separator + nextText)
+    this.emit('streamChunk', { text: separator + nextText, sessionKey: sk })
   }
 
   private mergeIncoming(incoming: string, modeHint: 'delta' | 'cumulative'): string {
@@ -408,10 +408,23 @@ export class OpenClawClient {
     if (event === 'agent' && payload.stream === 'assistant') {
       console.log('[ClawControl] handleNotification agent:assistant clientId:', this._debugId, 'activeStreamSource:', this.activeStreamSource)
     }
+
+    const eventSessionKey = payload?.sessionKey as string | undefined
+
+    // When a primary session filter is active and an event arrives from a
+    // different session, that's direct evidence of a subagent. Emit a
+    // detection event so the store can show a subagent block without
+    // relying on polling.
+    if (this.primarySessionKey && eventSessionKey && eventSessionKey !== this.primarySessionKey) {
+      this.emit('subagentDetected', { sessionKey: eventSessionKey })
+    }
+
     switch (event) {
       case 'chat':
+        if (!this.shouldProcessEvent(eventSessionKey)) return
+
         if (payload.state === 'delta') {
-          this.maybeUpdateRunAndSession(payload.runId, payload.sessionKey)
+          this.maybeUpdateRunAndSession(payload.runId, eventSessionKey)
           this.ensureStream('chat', 'cumulative', payload.runId)
           if (this.activeStreamSource !== 'chat') {
             // Another stream type already claimed this response.
@@ -428,7 +441,7 @@ export class OpenClawClient {
           }
           return
         } else if (payload.state === 'final') {
-          this.maybeUpdateRunAndSession(payload.runId, payload.sessionKey)
+          this.maybeUpdateRunAndSession(payload.runId, eventSessionKey)
 
           // If the agent stream handled this response, lifecycle:end already
           // emitted streamEnd and reset state. Skip to avoid duplicates.
@@ -450,13 +463,14 @@ export class OpenClawClient {
                 id,
                 role: payload.message.role,
                 content: text,
-                timestamp: new Date(tsMs).toISOString()
+                timestamp: new Date(tsMs).toISOString(),
+                sessionKey: eventSessionKey
               })
             }
           }
 
           if (this.streamStarted) {
-            this.emit('streamEnd')
+            this.emit('streamEnd', { sessionKey: eventSessionKey })
           }
           this.resetStreamState()
         }
@@ -465,8 +479,10 @@ export class OpenClawClient {
         this.emit('agentStatus', payload)
         break
       case 'agent':
+        if (!this.shouldProcessEvent(eventSessionKey)) return
+
         if (payload.stream === 'assistant') {
-          this.maybeUpdateRunAndSession(payload.runId, payload.sessionKey)
+          this.maybeUpdateRunAndSession(payload.runId, eventSessionKey)
           const hasCanonicalText = typeof payload.data?.text === 'string'
           this.ensureStream('agent', hasCanonicalText ? 'cumulative' : 'delta', payload.runId)
           if (this.activeStreamSource !== 'agent') {
@@ -488,11 +504,11 @@ export class OpenClawClient {
             this.applyStreamText(nextText)
           }
         } else if (payload.stream === 'tool') {
-          this.maybeUpdateRunAndSession(payload.runId, payload.sessionKey)
+          this.maybeUpdateRunAndSession(payload.runId, eventSessionKey)
 
           if (!this.streamStarted) {
             this.streamStarted = true
-            this.emit('streamStart')
+            this.emit('streamStart', { sessionKey: eventSessionKey })
           }
 
           const data = payload.data || {}
@@ -501,17 +517,18 @@ export class OpenClawClient {
             toolCallId: data.toolCallId || data.id || `tool-${Date.now()}`,
             name: data.name || data.toolName || 'unknown',
             phase: data.phase || (data.result !== undefined ? 'result' : 'start'),
-            result: rawResult ? stripAnsi(rawResult) : undefined
+            result: rawResult ? stripAnsi(rawResult) : undefined,
+            sessionKey: eventSessionKey
           }
           this.emit('toolCall', toolPayload)
         } else if (payload.stream === 'lifecycle') {
           // lifecycle frames often arrive before the first assistant delta; capture the canonical session key early.
-          this.maybeUpdateRunAndSession(payload.runId, payload.sessionKey)
+          this.maybeUpdateRunAndSession(payload.runId, eventSessionKey)
           const phase = payload.data?.phase
           const state = payload.data?.state
           if (phase === 'end' || phase === 'error' || state === 'complete' || state === 'error') {
             if (this.activeStreamSource === 'agent' && this.streamStarted) {
-              this.emit('streamEnd')
+              this.emit('streamEnd', { sessionKey: eventSessionKey })
               this.resetStreamState()
             }
           }
@@ -520,6 +537,20 @@ export class OpenClawClient {
       default:
         this.emit(event, payload)
     }
+  }
+
+  getActiveSessionKey(): string | null {
+    return this.activeSessionKey
+  }
+
+  setPrimarySessionKey(key: string | null): void {
+    this.primarySessionKey = key
+  }
+
+  private shouldProcessEvent(sessionKey?: unknown): boolean {
+    if (!this.primarySessionKey) return true
+    if (!sessionKey || typeof sessionKey !== 'string') return true
+    return sessionKey === this.primarySessionKey
   }
 
   // Domain API methods - delegated to modules

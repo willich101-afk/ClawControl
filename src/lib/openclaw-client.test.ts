@@ -63,8 +63,8 @@ describe('OpenClawClient', () => {
       client.handleNotification('chat', { state: 'delta', delta: 'chat-1chat-2' })
 
       expect(chunkHandler).toHaveBeenCalledTimes(2)
-      expect(chunkHandler).toHaveBeenNthCalledWith(1, 'chat-1')
-      expect(chunkHandler).toHaveBeenNthCalledWith(2, 'chat-2')
+      expect(chunkHandler).toHaveBeenNthCalledWith(1, expect.objectContaining({ text: 'chat-1' }))
+      expect(chunkHandler).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: 'chat-2' }))
     })
 
     it('should ignore chat deltas when agent stream claims first', () => {
@@ -79,8 +79,8 @@ describe('OpenClawClient', () => {
       client.handleNotification('agent', { stream: 'assistant', data: { delta: 'assistant-2' } })
 
       expect(chunkHandler).toHaveBeenCalledTimes(2)
-      expect(chunkHandler).toHaveBeenNthCalledWith(1, 'assistant-1')
-      expect(chunkHandler).toHaveBeenNthCalledWith(2, 'assistant-2')
+      expect(chunkHandler).toHaveBeenNthCalledWith(1, expect.objectContaining({ text: 'assistant-1' }))
+      expect(chunkHandler).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: 'assistant-2' }))
     })
 
     it('should ignore agent deltas when chat stream claims first', () => {
@@ -95,8 +95,8 @@ describe('OpenClawClient', () => {
       client.handleNotification('chat', { state: 'delta', delta: 'chat-1chat-2' })
 
       expect(chunkHandler).toHaveBeenCalledTimes(2)
-      expect(chunkHandler).toHaveBeenNthCalledWith(1, 'chat-1')
-      expect(chunkHandler).toHaveBeenNthCalledWith(2, 'chat-2')
+      expect(chunkHandler).toHaveBeenNthCalledWith(1, expect.objectContaining({ text: 'chat-1' }))
+      expect(chunkHandler).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: 'chat-2' }))
     })
 
     it('should de-duplicate cumulative assistant chunks', () => {
@@ -113,9 +113,9 @@ describe('OpenClawClient', () => {
       client.handleNotification('agent', { stream: 'assistant', data: { delta: 'No, I do not see it' } })
 
       expect(chunkHandler).toHaveBeenCalledTimes(3)
-      expect(chunkHandler).toHaveBeenNthCalledWith(1, 'No')
-      expect(chunkHandler).toHaveBeenNthCalledWith(2, ', I do not')
-      expect(chunkHandler).toHaveBeenNthCalledWith(3, ' see it')
+      expect(chunkHandler).toHaveBeenNthCalledWith(1, expect.objectContaining({ text: 'No' }))
+      expect(chunkHandler).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: ', I do not' }))
+      expect(chunkHandler).toHaveBeenNthCalledWith(3, expect.objectContaining({ text: ' see it' }))
     })
 
     it('should accumulate text across content blocks on rewind', () => {
@@ -129,12 +129,12 @@ describe('OpenClawClient', () => {
       client.handleNotification('agent', { runId: 'r1', stream: 'assistant', data: { text: 'get my bearings real quick.' } })
 
       expect(chunkHandler).toHaveBeenCalledTimes(2)
-      expect(chunkHandler).toHaveBeenNthCalledWith(1, 'Hey! Just came online. Let me')
+      expect(chunkHandler).toHaveBeenNthCalledWith(1, expect.objectContaining({ text: 'Hey! Just came online. Let me' }))
       // New block text is appended with separator instead of replacing
-      expect(chunkHandler).toHaveBeenNthCalledWith(2, '\n\nget my bearings real quick.')
+      expect(chunkHandler).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: '\n\nget my bearings real quick.' }))
     })
 
-    it('should end on assistant lifecycle complete and still process chat final', () => {
+    it('should end on assistant lifecycle complete and skip duplicate chat final streamEnd', () => {
       const streamEndHandler = vi.fn()
       const messageHandler = vi.fn()
       client.on('streamEnd', streamEndHandler)
@@ -150,12 +150,14 @@ describe('OpenClawClient', () => {
         message: { id: 'msg-1', role: 'assistant', content: 'duplicate-final' }
       })
 
-      // Lifecycle end + chat final can both arrive; chat final is still useful for canonical IDs.
-      expect(streamEndHandler).toHaveBeenCalledTimes(2)
+      // Lifecycle end fires streamEnd + resets state. Chat final arrives after reset,
+      // sees activeStreamSource is null (not 'agent'), so it processes the message
+      // but streamStarted is false so no duplicate streamEnd.
+      expect(streamEndHandler).toHaveBeenCalledTimes(1)
       expect(messageHandler).toHaveBeenCalledTimes(1)
     })
 
-    it('should still process chat final when assistant stream is not active', () => {
+    it('should still process chat final message when no stream was active', () => {
       const streamEndHandler = vi.fn()
       const messageHandler = vi.fn()
       client.on('streamEnd', streamEndHandler)
@@ -167,7 +169,9 @@ describe('OpenClawClient', () => {
         message: { id: 'msg-2', role: 'assistant', content: 'chat-only-final' }
       })
 
-      expect(streamEndHandler).toHaveBeenCalledTimes(1)
+      // No stream was started, so streamEnd should not fire
+      expect(streamEndHandler).toHaveBeenCalledTimes(0)
+      // But the message should still be emitted
       expect(messageHandler).toHaveBeenCalledTimes(1)
       expect(messageHandler).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -252,8 +256,205 @@ describe('OpenClawClient', () => {
       expect(toolCallHandler).toHaveBeenCalledTimes(1)
       // Assistant stream should not be disrupted
       expect(chunkHandler).toHaveBeenCalledTimes(2)
-      expect(chunkHandler).toHaveBeenNthCalledWith(1, 'hello')
-      expect(chunkHandler).toHaveBeenNthCalledWith(2, ' world')
+      expect(chunkHandler).toHaveBeenNthCalledWith(1, expect.objectContaining({ text: 'hello' }))
+      expect(chunkHandler).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: ' world' }))
+    })
+
+    it('should include sessionKey in streamChunk payloads', () => {
+      const chunkHandler = vi.fn()
+      client.on('streamChunk', chunkHandler)
+
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('agent', {
+        stream: 'assistant',
+        sessionKey: 'sess-1',
+        data: { delta: 'hello' }
+      })
+
+      expect(chunkHandler).toHaveBeenCalledTimes(1)
+      expect(chunkHandler).toHaveBeenCalledWith({ text: 'hello', sessionKey: 'sess-1' })
+    })
+  })
+
+  describe('primary session filtering', () => {
+    it('should ignore events from non-primary sessions', () => {
+      const chunkHandler = vi.fn()
+      client.on('streamChunk', chunkHandler)
+
+      // Set primary session
+      client.setPrimarySessionKey('primary-session')
+
+      // Event from primary session should be processed
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('agent', {
+        stream: 'assistant',
+        sessionKey: 'primary-session',
+        data: { delta: 'primary text' }
+      })
+
+      // Event from non-primary session should be ignored
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('agent', {
+        stream: 'assistant',
+        sessionKey: 'subagent-session',
+        data: { delta: 'subagent text' }
+      })
+
+      expect(chunkHandler).toHaveBeenCalledTimes(1)
+      expect(chunkHandler).toHaveBeenCalledWith(expect.objectContaining({ text: 'primary text' }))
+    })
+
+    it('should allow events without sessionKey to pass through (legacy fallback)', () => {
+      const chunkHandler = vi.fn()
+      client.on('streamChunk', chunkHandler)
+
+      client.setPrimarySessionKey('primary-session')
+
+      // Event with no sessionKey should still be processed
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('agent', {
+        stream: 'assistant',
+        data: { delta: 'legacy event' }
+      })
+
+      expect(chunkHandler).toHaveBeenCalledTimes(1)
+      expect(chunkHandler).toHaveBeenCalledWith(expect.objectContaining({ text: 'legacy event' }))
+    })
+
+    it('should process all events when no primary session is set', () => {
+      const chunkHandler = vi.fn()
+      client.on('streamChunk', chunkHandler)
+
+      // No primary session set — all events should pass through
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('agent', {
+        stream: 'assistant',
+        sessionKey: 'any-session',
+        data: { delta: 'some text' }
+      })
+
+      expect(chunkHandler).toHaveBeenCalledTimes(1)
+    })
+
+    it('should not reset stream state when subagent runId differs', () => {
+      const chunkHandler = vi.fn()
+      client.on('streamChunk', chunkHandler)
+
+      client.setPrimarySessionKey('primary-session')
+
+      // Parent session sends text
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('agent', {
+        stream: 'assistant',
+        sessionKey: 'primary-session',
+        runId: 'parent-run',
+        data: { delta: 'hello from parent' }
+      })
+
+      // Subagent event with different runId should be filtered out entirely
+      // (not cause a stream reset)
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('agent', {
+        stream: 'assistant',
+        sessionKey: 'subagent-session',
+        runId: 'subagent-run',
+        data: { delta: 'hello from subagent' }
+      })
+
+      // Parent continues — should still work without reset
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('agent', {
+        stream: 'assistant',
+        sessionKey: 'primary-session',
+        runId: 'parent-run',
+        data: { delta: 'hello from parent, continued' }
+      })
+
+      expect(chunkHandler).toHaveBeenCalledTimes(2)
+      expect(chunkHandler).toHaveBeenNthCalledWith(1, expect.objectContaining({ text: 'hello from parent' }))
+      expect(chunkHandler).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: ', continued' }))
+    })
+
+    it('should filter tool events from non-primary sessions', () => {
+      const toolCallHandler = vi.fn()
+      client.on('toolCall', toolCallHandler)
+
+      client.setPrimarySessionKey('primary-session')
+
+      // Tool event from subagent should be ignored
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('agent', {
+        stream: 'tool',
+        sessionKey: 'subagent-session',
+        data: { toolCallId: 'tc-sub', name: 'bash', phase: 'start' }
+      })
+
+      // Tool event from primary session should be processed
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('agent', {
+        stream: 'tool',
+        sessionKey: 'primary-session',
+        data: { toolCallId: 'tc-primary', name: 'bash', phase: 'start' }
+      })
+
+      expect(toolCallHandler).toHaveBeenCalledTimes(1)
+      expect(toolCallHandler).toHaveBeenCalledWith(
+        expect.objectContaining({ toolCallId: 'tc-primary' })
+      )
+    })
+
+    it('should filter chat events from non-primary sessions', () => {
+      const chunkHandler = vi.fn()
+      client.on('streamChunk', chunkHandler)
+
+      client.setPrimarySessionKey('primary-session')
+
+      // Chat delta from subagent should be ignored
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('chat', {
+        state: 'delta',
+        sessionKey: 'subagent-session',
+        delta: 'subagent chat'
+      })
+
+      // Chat delta from primary session should be processed
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('chat', {
+        state: 'delta',
+        sessionKey: 'primary-session',
+        delta: 'primary chat'
+      })
+
+      expect(chunkHandler).toHaveBeenCalledTimes(1)
+      expect(chunkHandler).toHaveBeenCalledWith(expect.objectContaining({ text: 'primary chat' }))
+    })
+
+    it('setPrimarySessionKey pre-seeding works before events arrive', () => {
+      const chunkHandler = vi.fn()
+      const streamStartHandler = vi.fn()
+      client.on('streamChunk', chunkHandler)
+      client.on('streamStart', streamStartHandler)
+
+      // Pre-seed before any events
+      client.setPrimarySessionKey('my-session')
+
+      // Only my-session events should create a stream
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('agent', {
+        stream: 'assistant',
+        sessionKey: 'other-session',
+        data: { delta: 'should be ignored' }
+      })
+      // @ts-expect-error - accessing private method for testing
+      client.handleNotification('agent', {
+        stream: 'assistant',
+        sessionKey: 'my-session',
+        data: { delta: 'should be shown' }
+      })
+
+      expect(streamStartHandler).toHaveBeenCalledTimes(1)
+      expect(chunkHandler).toHaveBeenCalledTimes(1)
+      expect(chunkHandler).toHaveBeenCalledWith(expect.objectContaining({ text: 'should be shown' }))
     })
   })
 
@@ -344,7 +545,7 @@ describe('OpenClawClient', () => {
       expect(payload).toHaveProperty('message', 'hello')
     })
 
-    it('should omit sessionKey when sessionId is not provided', async () => {
+    it('should use default sessionKey when sessionId is not provided', async () => {
       const callSpy = vi
         .spyOn(client as any, 'call')
         .mockResolvedValue({ sessionKey: 'server-session-2' })
@@ -355,7 +556,8 @@ describe('OpenClawClient', () => {
 
       expect(callSpy).toHaveBeenCalledTimes(1)
       const payload = callSpy.mock.calls[0][1]
-      expect(payload).not.toHaveProperty('sessionKey')
+      // chat.ts always sends a sessionKey, defaulting to 'agent:main:main'
+      expect(payload).toHaveProperty('sessionKey', 'agent:main:main')
       expect(payload).toHaveProperty('message', 'new chat')
     })
   })

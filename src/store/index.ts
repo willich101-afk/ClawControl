@@ -9,6 +9,15 @@ export interface ToolCall {
   phase: 'start' | 'result'
   result?: string
   startedAt: number
+  afterMessageId?: string
+}
+
+export interface SubagentInfo {
+  sessionKey: string
+  label: string
+  status: 'running' | 'completed'
+  detectedAt: number
+  afterMessageId?: string
 }
 
 interface AgentDetail {
@@ -104,6 +113,12 @@ interface AppState {
   skills: Skill[]
   cronJobs: CronJob[]
 
+  // Subagents
+  activeSubagents: SubagentInfo[]
+  startSubagentPolling: () => void
+  stopSubagentPolling: () => void
+  openSubagentPopout: (sessionKey: string) => void
+
   // Actions
   initializeApp: () => Promise<void>
   connect: () => Promise<void>
@@ -113,6 +128,28 @@ interface AppState {
   fetchAgents: () => Promise<void>
   fetchSkills: () => Promise<void>
   fetchCronJobs: () => Promise<void>
+}
+
+// Module-level polling state (not persisted)
+let _subagentPollTimer: ReturnType<typeof setInterval> | null = null
+let _baselineSessionKeys: Set<string> | null = null
+
+/**
+ * If the last message is a streaming placeholder (id starts with "streaming-"),
+ * finalize it with a stable ID so that subsequent tool calls / subagents can
+ * reference it via `afterMessageId`, and new stream chunks will create a fresh
+ * streaming message instead of appending to the finalized one.
+ */
+function finalizeStreamingMessage(messages: Message[]): { messages: Message[]; finalizedId: string | null } {
+  if (messages.length === 0) return { messages, finalizedId: null }
+  const last = messages[messages.length - 1]
+  if (last.role !== 'assistant' || !last.id.startsWith('streaming-')) {
+    return { messages, finalizedId: last.role === 'assistant' ? last.id : null }
+  }
+  const stableId = `msg-finalized-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+  const updated = [...messages]
+  updated[updated.length - 1] = { ...last, id: stableId }
+  return { messages: updated, finalizedId: stableId }
 }
 
 function shouldNotify(
@@ -316,15 +353,99 @@ export const useStore = create<AppState>()(
       }),
       streamingSessionId: null,
 
+      // Subagents
+      activeSubagents: [],
+      startSubagentPolling: () => {
+        const { client, sessions } = get()
+        if (!client || _subagentPollTimer) return
+
+        // Snapshot current session keys as baseline
+        _baselineSessionKeys = new Set(sessions.map(s => s.key || s.id))
+
+        _subagentPollTimer = setInterval(async () => {
+          const { client: c, currentSessionId } = get()
+          if (!c) return
+
+          try {
+            const allSessions = await c.listSessions()
+            const newSubagents: SubagentInfo[] = []
+
+            for (const s of allSessions) {
+              const key = s.key || s.id
+              if (_baselineSessionKeys?.has(key)) continue
+
+              // Detect subagents by spawned flag or parentSessionId matching current session
+              const isSubagent = s.spawned === true || s.parentSessionId === currentSessionId
+              if (!isSubagent) continue
+
+              // Skip if already tracked
+              const { activeSubagents } = get()
+              if (activeSubagents.some(a => a.sessionKey === key)) continue
+
+              newSubagents.push({
+                sessionKey: key,
+                label: s.title || key,
+                status: 'running',
+                detectedAt: Date.now()
+              })
+            }
+
+            if (newSubagents.length > 0) {
+              set((state) => {
+                // Finalize current streaming message so subagent blocks render inline
+                const { messages: finalizedMsgs, finalizedId } = finalizeStreamingMessage(state.messages)
+                const tagged = newSubagents.map(sa => ({
+                  ...sa,
+                  afterMessageId: finalizedId || undefined
+                }))
+                return {
+                  messages: finalizedMsgs,
+                  activeSubagents: [...state.activeSubagents, ...tagged]
+                }
+              })
+            }
+          } catch {
+            // Polling failure — ignore
+          }
+        }, 1000)
+      },
+      stopSubagentPolling: () => {
+        if (_subagentPollTimer) {
+          clearInterval(_subagentPollTimer)
+          _subagentPollTimer = null
+        }
+        _baselineSessionKeys = null
+
+        // Mark all running subagents as completed
+        set((state) => ({
+          activeSubagents: state.activeSubagents.map(a =>
+            a.status === 'running' ? { ...a, status: 'completed' as const } : a
+          )
+        }))
+      },
+      openSubagentPopout: (sessionKey: string) => {
+        const { serverUrl, gatewayToken, authMode, activeSubagents } = get()
+        const subagent = activeSubagents.find(a => a.sessionKey === sessionKey)
+        Platform.openSubagentPopout({
+          sessionKey,
+          serverUrl,
+          authToken: gatewayToken,
+          authMode,
+          label: subagent?.label || sessionKey
+        })
+      },
+
       // Sessions
       sessions: [],
       currentSessionId: null,
       setCurrentSession: (sessionId) => {
-        const { unreadCounts } = get()
+        const { unreadCounts, client } = get()
         const { [sessionId]: _, ...restCounts } = unreadCounts
-        set({ currentSessionId: sessionId, messages: [], unreadCounts: restCounts })
+        // Clear primary session filter when switching sessions
+        client?.setPrimarySessionKey(null)
+        set({ currentSessionId: sessionId, messages: [], activeSubagents: [], unreadCounts: restCounts })
         // Load session messages
-        get().client?.getSessionMessages(sessionId).then((messages) => {
+        client?.getSessionMessages(sessionId).then((messages) => {
           set({ messages })
         })
       },
@@ -340,6 +461,7 @@ export const useStore = create<AppState>()(
           messages: [],
           isStreaming: false,
           hadStreamChunks: false,
+          activeSubagents: [],
           streamingSessionId: null
         }))
       },
@@ -479,7 +601,18 @@ export const useStore = create<AppState>()(
 
           // Set up event handlers
           client.on('message', (msgArg: unknown) => {
-            const message = msgArg as Message
+            const msgPayload = msgArg as Message & { sessionKey?: string }
+            const sessionKey = msgPayload.sessionKey
+            const { currentSessionId } = get()
+            if (sessionKey && currentSessionId && sessionKey !== currentSessionId) return
+
+            const message: Message = {
+              id: msgPayload.id,
+              role: msgPayload.role,
+              content: msgPayload.content,
+              timestamp: msgPayload.timestamp,
+              thinking: msgPayload.thinking
+            }
             let replacedStreaming = false
 
             set((state) => {
@@ -502,7 +635,7 @@ export const useStore = create<AppState>()(
                 }
               }
               return {
-                messages: [...state.messages, message as Message],
+                messages: [...state.messages, message],
                 isStreaming: false
               }
             })
@@ -523,6 +656,7 @@ export const useStore = create<AppState>()(
 
           client.on('disconnected', () => {
             set({ connected: false, isStreaming: false, hadStreamChunks: false, activeToolCalls: [] })
+            get().stopSubagentPolling()
           })
 
           client.on('certError', (payload: unknown) => {
@@ -530,22 +664,36 @@ export const useStore = create<AppState>()(
             get().showCertErrorModal(httpsUrl)
           })
 
-          client.on('streamStart', () => {
+          client.on('streamStart', (payload: unknown) => {
+            const { sessionKey } = (payload || {}) as { sessionKey?: string }
+            const { currentSessionId } = get()
+            if (sessionKey && currentSessionId && sessionKey !== currentSessionId) return
             set({ isStreaming: true, hadStreamChunks: false })
+            get().startSubagentPolling()
           })
 
           client.on('streamChunk', (chunkArg: unknown) => {
-            const text = String(chunkArg)
+            const chunk = (chunkArg && typeof chunkArg === 'object')
+              ? chunkArg as { text?: string; sessionKey?: string }
+              : { text: String(chunkArg) }
+            const text = chunk.text || ''
+            const sessionKey = chunk.sessionKey
             console.log('[ClawControl] streamChunk received, len:', text.length, 'preview:', JSON.stringify(text.slice(0, 40)))
 
             // Skip empty chunks
             if (!text) return
 
+            // Session filtering
+            const { currentSessionId } = get()
+            if (sessionKey && currentSessionId && sessionKey !== currentSessionId) return
+
             set((state) => {
               const messages = [...state.messages]
               const lastMessage = messages[messages.length - 1]
 
-              if (lastMessage && lastMessage.role === 'assistant') {
+              // Only append to an active streaming placeholder — finalized messages
+              // should not be extended (a new streaming message will be created instead).
+              if (lastMessage && lastMessage.role === 'assistant' && lastMessage.id.startsWith('streaming-')) {
                 const updatedMessage = { ...lastMessage, content: lastMessage.content + text }
                 messages[messages.length - 1] = updatedMessage
                 return { messages, isStreaming: true, hadStreamChunks: true }
@@ -562,8 +710,12 @@ export const useStore = create<AppState>()(
             })
           })
 
-          client.on('streamEnd', () => {
-            const { streamingSessionId, currentSessionId, messages, hadStreamChunks } = get()
+          client.on('streamEnd', (payload: unknown) => {
+            const { sessionKey } = (payload || {}) as { sessionKey?: string }
+            const { currentSessionId } = get()
+            if (sessionKey && currentSessionId && sessionKey !== currentSessionId) return
+
+            const { streamingSessionId, messages, hadStreamChunks } = get()
 
             // If streamEnd fires while we still have a streamingSessionId, the response completed
             if (streamingSessionId && hadStreamChunks) {
@@ -587,6 +739,7 @@ export const useStore = create<AppState>()(
             }
 
             set({ isStreaming: false, streamingSessionId: null, hadStreamChunks: false })
+            get().stopSubagentPolling()
           })
 
           // When the server reports the canonical session key during streaming,
@@ -614,7 +767,10 @@ export const useStore = create<AppState>()(
           })
 
           client.on('toolCall', (payload: unknown) => {
-            const tc = payload as { toolCallId: string; name: string; phase: string; result?: string }
+            const tc = payload as { toolCallId: string; name: string; phase: string; result?: string; sessionKey?: string }
+            const { currentSessionId } = get()
+            if (tc.sessionKey && currentSessionId && tc.sessionKey !== currentSessionId) return
+
             set((state) => {
               const idx = state.activeToolCalls.findIndex(t => t.toolCallId === tc.toolCallId)
               if (idx >= 0) {
@@ -626,13 +782,43 @@ export const useStore = create<AppState>()(
                 }
                 return { activeToolCalls: updated }
               }
+
+              // New tool call: finalize the current streaming message so subsequent
+              // stream chunks create a new bubble, and link this tool call to it.
+              const { messages: finalizedMsgs, finalizedId } = finalizeStreamingMessage(state.messages)
               return {
+                messages: finalizedMsgs,
                 activeToolCalls: [...state.activeToolCalls, {
                   toolCallId: tc.toolCallId,
                   name: tc.name,
                   phase: tc.phase as 'start' | 'result',
                   result: tc.result,
-                  startedAt: Date.now()
+                  startedAt: Date.now(),
+                  afterMessageId: finalizedId || undefined
+                }]
+              }
+            })
+          })
+
+          // Event-driven subagent detection: when the primary session filter
+          // blocks an event from a different session, the client emits this.
+          client.on('subagentDetected', (payload: unknown) => {
+            const { sessionKey } = payload as { sessionKey: string }
+            if (!sessionKey) return
+
+            set((state) => {
+              // Skip if already tracked
+              if (state.activeSubagents.some(a => a.sessionKey === sessionKey)) return state
+
+              const { messages: finalizedMsgs, finalizedId } = finalizeStreamingMessage(state.messages)
+              return {
+                messages: finalizedMsgs,
+                activeSubagents: [...state.activeSubagents, {
+                  sessionKey,
+                  label: sessionKey,
+                  status: 'running' as const,
+                  detectedAt: Date.now(),
+                  afterMessageId: finalizedId || undefined
                 }]
               }
             })
@@ -678,11 +864,15 @@ export const useStore = create<AppState>()(
           }))
         }
 
+        // Pre-seed the primary session filter so subagent events are dropped
+        client.setPrimarySessionKey(sessionId!)
+
         // Reset streaming state so user can always send follow-up messages
         set({
           isStreaming: false,
           hadStreamChunks: false,
           activeToolCalls: [],
+          activeSubagents: [],
           streamingSessionId: sessionId
         })
 

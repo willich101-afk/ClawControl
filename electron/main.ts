@@ -209,6 +209,42 @@ ipcMain.handle('auth:isEncryptionAvailable', async () => {
   return safeStorage.isEncryptionAvailable()
 })
 
+// Open a subagent popout window
+ipcMain.handle('subagent:openPopout', async (_event, params: {
+  sessionKey: string
+  serverUrl: string
+  authToken: string
+  authMode: string
+  label: string
+}) => {
+  const hash = `#subagent?sessionKey=${encodeURIComponent(params.sessionKey)}&serverUrl=${encodeURIComponent(params.serverUrl)}&authToken=${encodeURIComponent(params.authToken)}&authMode=${encodeURIComponent(params.authMode)}`
+
+  const popout = new BrowserWindow({
+    width: 800,
+    height: 700,
+    minWidth: 500,
+    minHeight: 400,
+    title: `Subagent: ${params.label}`,
+    icon: join(__dirname, '../build/icon.png'),
+    webPreferences: {
+      preload: join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      devTools: !app.isPackaged
+    },
+    backgroundColor: '#0d1117'
+  })
+
+  // Remove menu bar from popout
+  popout.setMenuBarVisibility(false)
+
+  if (process.env.VITE_DEV_SERVER_URL) {
+    popout.loadURL(`${process.env.VITE_DEV_SERVER_URL}${hash}`)
+  } else {
+    popout.loadFile(join(__dirname, '../dist/index.html'), { hash: hash.slice(1) })
+  }
+})
+
 // Trust a hostname for certificate errors (persisted across app restarts)
 ipcMain.handle('cert:trustHost', async (_event, hostname: string) => {
   // Validate hostname format

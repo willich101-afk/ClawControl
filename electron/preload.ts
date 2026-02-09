@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getToken: () => ipcRenderer.invoke('auth:getToken'),
   isEncryptionAvailable: () => ipcRenderer.invoke('auth:isEncryptionAvailable'),
   showNotification: (title: string, body: string) => ipcRenderer.invoke('notification:show', title, body),
+  openSubagentPopout: (params: { sessionKey: string; serverUrl: string; authToken: string; authMode: string; label: string }) =>
+    ipcRenderer.invoke('subagent:openPopout', params),
   platform: process.platform
 })
 
@@ -26,6 +28,7 @@ declare global {
       getToken: () => Promise<string>
       isEncryptionAvailable: () => Promise<boolean>
       showNotification: (title: string, body: string) => Promise<void>
+      openSubagentPopout: (params: { sessionKey: string; serverUrl: string; authToken: string; authMode: string; label: string }) => Promise<void>
       platform: NodeJS.Platform
     }
   }

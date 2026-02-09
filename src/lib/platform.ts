@@ -262,6 +262,28 @@ export async function showNotification(title: string, body: string): Promise<voi
   }
 }
 
+// Subagent popout window
+export interface SubagentPopoutParams {
+  sessionKey: string
+  serverUrl: string
+  authToken: string
+  authMode: string
+  label: string
+}
+
+export async function openSubagentPopout(params: SubagentPopoutParams): Promise<void> {
+  const platform = getPlatform()
+
+  if (platform === 'electron' && (window as any).electronAPI?.openSubagentPopout) {
+    await (window as any).electronAPI.openSubagentPopout(params)
+    return
+  }
+
+  // Fallback for web/mobile: open in new tab with hash params
+  const hash = `#subagent?sessionKey=${encodeURIComponent(params.sessionKey)}&serverUrl=${encodeURIComponent(params.serverUrl)}&authToken=${encodeURIComponent(params.authToken)}&authMode=${encodeURIComponent(params.authMode)}`
+  window.open(`${window.location.origin}${window.location.pathname}${hash}`, '_blank')
+}
+
 // App visibility tracking
 let _appIsActive = true
 
