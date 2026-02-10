@@ -103,7 +103,8 @@ We map OpenClaw protocol entities to internal TypeScript interfaces.
 **Key RPC Methods:**
 - `sessions.list` — List chat sessions
 - `sessions.delete` — Delete a session
-- `sessions.patch` — Update session metadata
+- `sessions.patch` — Update session metadata (e.g., label)
+- `sessions.spawn` — Spawn a new isolated subagent session
 - `chat.send` — Send a message
 - `chat.history` — Retrieve message history for a session
 - `agents.list` — List available agents

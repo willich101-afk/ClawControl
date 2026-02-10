@@ -4,12 +4,14 @@ A desktop client for OpenClaw AI assistant. Built with Electron, React, and Type
 
 ## Features
 
-- **Chat Interface**: Clean, modern chat UI with message bubbles and streaming support
+- **Chat Interface**: Clean, modern chat UI with message bubbles, streaming support, and markdown rendering
+- **Thinking Mode**: Toggle extended thinking for complex tasks with visible reasoning display
 - **Agent Selection**: Switch between different AI agents
-- **Thinking Mode**: Toggle extended thinking for complex tasks
-- **Sessions Management**: Create, view, and manage chat sessions
-- **Skills Viewer**: Browse available agent skills and their triggers
-- **Cron Jobs**: View and manage scheduled tasks
+- **Agent Profile View**: Browse agent details, configuration, and edit workspace files directly
+- **Sessions Management**: Create, view, and manage chat sessions with unread message indicators
+- **Subagent Spawning**: Spawn isolated subagent sessions for parallel task execution
+- **Skills Viewer**: Browse available agent skills, their triggers, and toggle enablement
+- **Cron Jobs**: View and manage scheduled tasks with live status updates
 - **Dark/Light Theme**: Full theme support with system preference detection
 - **Cross-Platform**: Windows and macOS support
 
@@ -172,7 +174,8 @@ clawcontrol/
 │   │   ├── SettingsModal.tsx
 │   │   ├── CertErrorModal.tsx
 │   │   ├── SkillDetailView.tsx
-│   │   └── CronJobDetailView.tsx
+│   │   ├── CronJobDetailView.tsx
+│   │   └── AgentDetailView.tsx
 │   ├── lib/
 │   │   └── openclaw-client.ts  # WebSocket client
 │   ├── store/
