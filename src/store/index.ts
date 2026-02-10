@@ -170,7 +170,8 @@ function finalizeStreamingMessage(messages: Message[]): { messages: Message[]; f
   if (messages.length === 0) return { messages, finalizedId: null }
   const last = messages[messages.length - 1]
   if (last.role !== 'assistant' || !last.id.startsWith('streaming-')) {
-    return { messages, finalizedId: last.role === 'assistant' ? last.id : null }
+    // Always return the last message's ID so subagents/tool-calls anchor inline
+    return { messages, finalizedId: last.id }
   }
   const stableId = `msg-finalized-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
   const updated = [...messages]
@@ -1200,11 +1201,11 @@ export const useStore = create<AppState>()(
         client.setPrimarySessionKey(sessionId!)
 
         // Reset streaming state so user can always send follow-up messages
+        // Keep activeSubagents so previous subagent blocks stay visible in chat
         set({
           isStreaming: false,
           hadStreamChunks: false,
           activeToolCalls: [],
-          activeSubagents: [],
           streamingSessionId: sessionId
         })
 
