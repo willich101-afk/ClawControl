@@ -948,10 +948,13 @@ export const useStore = create<AppState>()(
               const lastMsg = lastIdx >= 0 ? state.messages[lastIdx] : null
               if (lastMsg && lastMsg.role === 'assistant' && lastMsg.id.startsWith('streaming-')) {
                 replacedStreaming = true
-                // Streamed content is already correct. Just stop the streaming state
-                // without replacing the message object — avoids a visual flash from
-                // React re-rendering / DOM replacement.
-                return { isStreaming: false }
+                // Replace the streaming placeholder with the canonical server
+                // content.  If a lifecycle:end event arrived before the final
+                // chat message, the streamed text may be truncated — using the
+                // server's authoritative text ensures completeness.
+                const updated = [...state.messages]
+                updated[lastIdx] = { ...message }
+                return { messages: updated, isStreaming: false }
               }
 
               const exists = state.messages.some(m => m.id === message.id)

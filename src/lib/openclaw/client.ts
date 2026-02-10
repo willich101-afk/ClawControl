@@ -444,12 +444,9 @@ export class OpenClawClient {
         } else if (payload.state === 'final') {
           this.maybeUpdateRunAndSession(payload.runId, eventSessionKey)
 
-          // If the agent stream handled this response, lifecycle:end already
-          // emitted streamEnd and reset state. Skip to avoid duplicates.
-          if (this.activeStreamSource === 'agent') {
-            return
-          }
-
+          // Always emit the canonical final message so the store can replace
+          // any truncated streaming placeholder.  lifecycle:end may have
+          // already emitted streamEnd; guard against double-emit below.
           if (payload.message) {
             const text = extractTextFromContent(payload.message.content)
             if (text) {
