@@ -81,6 +81,27 @@ function createWindow() {
     menu.popup()
   })
 
+  // Open external links in the user's default browser
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http:') || url.startsWith('https:')) {
+      shell.openExternal(url)
+    }
+    return { action: 'deny' }
+  })
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    // Allow navigation to the dev server or the app itself
+    const appOrigin = process.env.VITE_DEV_SERVER_URL
+      ? new URL(process.env.VITE_DEV_SERVER_URL).origin
+      : 'file://'
+    if (!url.startsWith(appOrigin)) {
+      event.preventDefault()
+      if (url.startsWith('http:') || url.startsWith('https:')) {
+        shell.openExternal(url)
+      }
+    }
+  })
+
   // Load the app
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL)
@@ -237,6 +258,26 @@ ipcMain.handle('subagent:openPopout', async (_event, params: {
 
   // Remove menu bar from popout
   popout.setMenuBarVisibility(false)
+
+  // Open external links in the user's default browser
+  popout.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http:') || url.startsWith('https:')) {
+      shell.openExternal(url)
+    }
+    return { action: 'deny' }
+  })
+
+  popout.webContents.on('will-navigate', (event, url) => {
+    const appOrigin = process.env.VITE_DEV_SERVER_URL
+      ? new URL(process.env.VITE_DEV_SERVER_URL).origin
+      : 'file://'
+    if (!url.startsWith(appOrigin)) {
+      event.preventDefault()
+      if (url.startsWith('http:') || url.startsWith('https:')) {
+        shell.openExternal(url)
+      }
+    }
+  })
 
   if (process.env.VITE_DEV_SERVER_URL) {
     popout.loadURL(`${process.env.VITE_DEV_SERVER_URL}${hash}`)
