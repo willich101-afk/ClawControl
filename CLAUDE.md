@@ -34,7 +34,7 @@ The OpenClaw protocol uses typed frames:
 - `res`: Responses with `ok` boolean and `payload`/`error`
 - `event`: Server-pushed events like `chat`, `agent`, `connect.challenge`
 
-Key RPC methods: `sessions.list`, `chat.send`, `chat.history`, `agents.list`, `skills.status`, `cron.list`
+Key RPC methods: `sessions.list`, `sessions.spawn`, `chat.send`, `chat.history`, `agents.list`, `skills.status`, `cron.list`
 
 ### Component Layout
 ```

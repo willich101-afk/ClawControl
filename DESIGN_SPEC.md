@@ -296,31 +296,44 @@ Centered illustration with:
 
 - Minimum contrast ratio: 4.5:1 for text
 - Focus indicators: 2px cyan outline
-- Keyboard navigation: Tab through all interactive elements
-- Screen reader: Proper ARIA labels
-- Reduced motion: Respect `prefers-reduced-motion`
-
 ---
 
 ## File Structure
 
 ```
 src/
-├── renderer/
-│   ├── styles/
-│   │   ├── variables.css      # CSS custom properties
-│   │   ├── reset.css          # CSS reset
-│   │   ├── typography.css     # Font definitions
-│   │   ├── components/        # Component styles
-│   │   └── themes/
-│   │       ├── dark.css
-│   │       └── light.css
-│   ├── components/
-│   │   ├── Sidebar/
-│   │   ├── ChatArea/
-│   │   ├── TopBar/
-│   │   ├── RightPanel/
-│   │   ├── MessageBubble/
-│   │   └── InputArea/
-│   └── App.tsx
+├── components/              # React components
+│   ├── ChatArea.tsx
+│   ├── InputArea.tsx
+│   ├── RightPanel.tsx
+│   ├── Sidebar.tsx
+│   ├── TopBar.tsx
+│   ├── SettingsModal.tsx
+│   ├── CertErrorModal.tsx
+│   ├── SkillDetailView.tsx
+│   ├── CronJobDetailView.tsx
+│   ├── AgentDetailView.tsx
+│   └── index.ts
+├── lib/
+│   ├── openclaw-client.ts   # WebSocket client
+│   └── openclaw-client.test.ts
+├── store/
+│   └── index.ts             # Zustand state management
+├── styles/
+│   └── index.css            # Main stylesheet (variables, themes, components)
+├── test/
+│   └── setup.ts             # Vitest test setup
+├── App.tsx                  # Main app component
+├── main.tsx                 # Vite entry point
+└── vite-env.d.ts            # Vite type declarations
+
+electron/
+├── main.ts                  # Electron main process
+└── preload.ts               # Preload script (IPC bridge)
+
+build/
+└── icon.png                 # App icon
+
+scripts/
+└── test-connection.js       # Connection testing utility
 ```
