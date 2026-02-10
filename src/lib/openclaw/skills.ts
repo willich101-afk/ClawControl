@@ -35,3 +35,28 @@ export async function toggleSkill(call: RpcCaller, skillKey: string, enabled: bo
 export async function installSkill(call: RpcCaller, skillName: string, installId: string): Promise<void> {
   await call('skills.install', { name: skillName, installId, timeoutMs: 60000 })
 }
+
+export async function installHubSkill(call: RpcCaller, slug: string): Promise<void> {
+  // Validate slug to prevent command injection (slugs are kebab-case alphanumeric)
+  if (!/^[a-zA-Z0-9_-]+$/.test(slug)) {
+    throw new Error(`Invalid skill slug: ${slug}`)
+  }
+
+  // Get available nodes - find the first connected node
+  const result = await call<any>('node.list')
+  const nodeList = result?.nodes || []
+  const connectedNode = nodeList.find((n: any) => n.connected)
+  if (!connectedNode) {
+    throw new Error('No connected nodes available. Make sure a node is paired and connected.')
+  }
+
+  // Execute clawhub install on the node
+  await call('node.invoke', {
+    nodeId: connectedNode.nodeId,
+    command: 'exec',
+    params: {
+      command: `npx clawhub install ${slug} --force`,
+    },
+    idempotencyKey: `clawhub-install-${slug}-${Date.now()}`
+  }, { timeoutMs: 150000 })
+}

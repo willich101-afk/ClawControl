@@ -115,4 +115,4 @@ export interface EventFrame {
 
 export type EventHandler = (...args: unknown[]) => void
 
-export type RpcCaller = <T = any>(method: string, params?: any) => Promise<T>
+export type RpcCaller = <T = any>(method: string, params?: any, options?: { timeoutMs?: number }) => Promise<T>

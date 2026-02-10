@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
 import { Skill, CronJob } from '../lib/openclaw'
+import type { ClawHubSkill, ClawHubSort } from '../lib/clawhub'
 
 export function RightPanel() {
   const {
@@ -13,10 +14,20 @@ export function RightPanel() {
     selectSkill,
     selectCronJob,
     selectedSkill,
-    selectedCronJob
+    selectedCronJob,
+    skillsSubTab,
+    setSkillsSubTab,
+    clawHubSkills,
+    clawHubLoading,
+    clawHubSort,
+    setClawHubSort,
+    searchClawHubSkills,
+    selectClawHubSkill,
+    selectedClawHubSkill
   } = useStore()
 
   const [searchQuery, setSearchQuery] = useState('')
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const filteredSkills = skills.filter(
     (skill) =>
@@ -29,6 +40,18 @@ export function RightPanel() {
       job.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       job.schedule.toLowerCase().includes(searchQuery.toLowerCase())
   )
+
+  // Debounced search for ClawHub
+  useEffect(() => {
+    if (rightPanelTab !== 'skills' || skillsSubTab !== 'available') return
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      searchClawHubSkills(searchQuery)
+    }, 300)
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [searchQuery, skillsSubTab, rightPanelTab, searchClawHubSkills])
 
   return (
     <aside className={`right-panel ${rightPanelOpen ? 'visible' : 'hidden'}`}>
@@ -72,22 +95,76 @@ export function RightPanel() {
       </div>
 
       {rightPanelTab === 'skills' ? (
-        <div className="panel-content">
-          {filteredSkills.length > 0 ? (
-            filteredSkills.map((skill, index) => (
-              <SkillItem
-                key={skill.id || index}
-                skill={skill}
-                isSelected={selectedSkill?.id === skill.id}
-                onClick={() => selectSkill(skill)}
-              />
-            ))
+        <>
+          <div className="skills-sub-tabs">
+            <button
+              className={`skills-sub-tab ${skillsSubTab === 'installed' ? 'active' : ''}`}
+              onClick={() => setSkillsSubTab('installed')}
+            >
+              Installed
+            </button>
+            <button
+              className={`skills-sub-tab ${skillsSubTab === 'available' ? 'active' : ''}`}
+              onClick={() => setSkillsSubTab('available')}
+            >
+              Available
+            </button>
+          </div>
+
+          {skillsSubTab === 'installed' ? (
+            <div className="panel-content">
+              {filteredSkills.length > 0 ? (
+                filteredSkills.map((skill, index) => (
+                  <SkillItem
+                    key={skill.id || index}
+                    skill={skill}
+                    isSelected={selectedSkill?.id === skill.id}
+                    onClick={() => selectSkill(skill)}
+                  />
+                ))
+              ) : (
+                <div className="empty-panel">
+                  <p>No skills found</p>
+                </div>
+              )}
+            </div>
           ) : (
-            <div className="empty-panel">
-              <p>No skills found</p>
+            <div className="panel-content">
+              <div className="clawhub-sort">
+                <label>Sort by</label>
+                <select
+                  value={clawHubSort}
+                  onChange={(e) => setClawHubSort(e.target.value as ClawHubSort)}
+                >
+                  <option value="downloads">Downloads</option>
+                  <option value="stars">Stars</option>
+                  <option value="trending">Trending</option>
+                  <option value="updated">Recently Updated</option>
+                </select>
+              </div>
+
+              {clawHubLoading ? (
+                <div className="empty-panel">
+                  <div className="clawhub-loading-spinner" />
+                  <p>Loading skills...</p>
+                </div>
+              ) : clawHubSkills.length > 0 ? (
+                clawHubSkills.map((skill) => (
+                  <ClawHubSkillItem
+                    key={skill.slug}
+                    skill={skill}
+                    isSelected={selectedClawHubSkill?.slug === skill.slug}
+                    onClick={() => selectClawHubSkill(skill)}
+                  />
+                ))
+              ) : (
+                <div className="empty-panel">
+                  <p>No skills found on ClawHub</p>
+                </div>
+              )}
             </div>
           )}
-        </div>
+        </>
       ) : (
         <div className="panel-content">
           {filteredCronJobs.length > 0 ? (
@@ -148,6 +225,64 @@ function SkillItem({ skill, isSelected, onClick }: SkillItemProps) {
       </div>
     </div>
   )
+}
+
+interface ClawHubSkillItemProps {
+  skill: ClawHubSkill
+  isSelected: boolean
+  onClick: () => void
+}
+
+function ClawHubSkillItem({ skill, isSelected, onClick }: ClawHubSkillItemProps) {
+  return (
+    <div
+      className={`clawhub-skill-item clickable ${isSelected ? 'selected' : ''}`}
+      onClick={onClick}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => e.key === 'Enter' && onClick()}
+    >
+      <div className="clawhub-skill-header">
+        <div className="clawhub-skill-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" />
+          </svg>
+        </div>
+        {skill.version && (
+          <span className="clawhub-version">v{skill.version}</span>
+        )}
+      </div>
+      <div className="clawhub-skill-content">
+        <div className="clawhub-skill-name">{skill.name}</div>
+        <div className="clawhub-skill-desc">{skill.description}</div>
+        <div className="clawhub-skill-meta">
+          <span className="clawhub-stat" title="Downloads">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" />
+            </svg>
+            {formatCount(skill.downloads)}
+          </span>
+          <span className="clawhub-stat" title="Stars">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+            </svg>
+            {formatCount(skill.stars)}
+          </span>
+          {skill.owner.username && (
+            <span className="clawhub-stat owner">
+              {skill.owner.username}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function formatCount(n: number): string {
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return String(n)
 }
 
 interface CronJobItemProps {

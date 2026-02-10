@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { OpenClawClient, Message, Session, Agent, Skill, CronJob, AgentFile, CreateAgentParams, buildIdentityContent } from '../lib/openclaw'
+import type { ClawHubSkill, ClawHubSort } from '../lib/clawhub'
+import { listClawHubSkills, searchClawHub, getClawHubSkill, getClawHubSkillVersion, getClawHubSkillConvex } from '../lib/clawhub'
 import * as Platform from '../lib/platform'
 
 export interface ToolCall {
@@ -64,8 +66,8 @@ interface AppState {
   setRightPanelTab: (tab: 'skills' | 'crons') => void
 
   // Main View State
-  mainView: 'chat' | 'skill-detail' | 'cron-detail' | 'agent-detail' | 'create-agent'
-  setMainView: (view: 'chat' | 'skill-detail' | 'cron-detail' | 'agent-detail' | 'create-agent') => void
+  mainView: 'chat' | 'skill-detail' | 'cron-detail' | 'agent-detail' | 'create-agent' | 'clawhub-skill-detail'
+  setMainView: (view: 'chat' | 'skill-detail' | 'cron-detail' | 'agent-detail' | 'create-agent' | 'clawhub-skill-detail') => void
   selectedSkill: Skill | null
   selectedCronJob: CronJob | null
   selectedAgentDetail: AgentDetail | null
@@ -116,6 +118,23 @@ interface AppState {
   skills: Skill[]
   cronJobs: CronJob[]
 
+  // ClawHub
+  clawHubSkills: ClawHubSkill[]
+  clawHubLoading: boolean
+  clawHubSearchQuery: string
+  clawHubSort: ClawHubSort
+  selectedClawHubSkill: ClawHubSkill | null
+  skillsSubTab: 'installed' | 'available'
+  installingHubSkill: string | null
+  installHubSkillError: string | null
+  setSkillsSubTab: (tab: 'installed' | 'available') => void
+  fetchClawHubSkills: () => Promise<void>
+  searchClawHubSkills: (query: string) => Promise<void>
+  setClawHubSort: (sort: ClawHubSort) => void
+  selectClawHubSkill: (skill: ClawHubSkill) => void
+  installClawHubSkill: (slug: string) => Promise<void>
+  fetchClawHubSkillDetail: (slug: string) => Promise<void>
+
   // Subagents
   activeSubagents: SubagentInfo[]
   startSubagentPolling: () => void
@@ -136,6 +155,9 @@ interface AppState {
 // Module-level polling state (not persisted)
 let _subagentPollTimer: ReturnType<typeof setInterval> | null = null
 let _baselineSessionKeys: Set<string> | null = null
+
+// Cache of ClawHub skill stats from list results (slug -> { downloads, stars })
+const _clawHubStatsCache = new Map<string, { downloads: number; stars: number }>()
 
 /**
  * If the last message is a streaming placeholder (id starts with "streaming-"),
@@ -260,7 +282,7 @@ export const useStore = create<AppState>()(
           }
         }
       },
-      closeDetailView: () => set({ mainView: 'chat', selectedSkill: null, selectedCronJob: null, selectedAgentDetail: null }),
+      closeDetailView: () => set({ mainView: 'chat', selectedSkill: null, selectedCronJob: null, selectedAgentDetail: null, selectedClawHubSkill: null }),
       toggleSkillEnabled: async (skillId, enabled) => {
         const { client } = get()
         if (!client) return
@@ -659,6 +681,118 @@ export const useStore = create<AppState>()(
       // Skills & Crons
       skills: [],
       cronJobs: [],
+
+      // ClawHub
+      clawHubSkills: [],
+      clawHubLoading: false,
+      clawHubSearchQuery: '',
+      clawHubSort: 'downloads',
+      selectedClawHubSkill: null,
+      skillsSubTab: 'installed',
+      installingHubSkill: null,
+      installHubSkillError: null,
+      setSkillsSubTab: (tab) => {
+        set({ skillsSubTab: tab })
+        if (tab === 'available' && get().clawHubSkills.length === 0 && !get().clawHubLoading) {
+          get().fetchClawHubSkills()
+        }
+      },
+      fetchClawHubSkills: async () => {
+        set({ clawHubLoading: true })
+        try {
+          const skills = await listClawHubSkills(get().clawHubSort)
+          // Cache stats for enriching search results later
+          for (const s of skills) {
+            _clawHubStatsCache.set(s.slug, { downloads: s.downloads, stars: s.stars })
+          }
+          set({ clawHubSkills: skills })
+        } catch {
+          // fetch failed
+        }
+        set({ clawHubLoading: false })
+      },
+      searchClawHubSkills: async (query) => {
+        set({ clawHubSearchQuery: query, clawHubLoading: true })
+        try {
+          let skills = query.trim()
+            ? await searchClawHub(query)
+            : await listClawHubSkills(get().clawHubSort)
+          // Enrich search results with cached stats (search endpoint doesn't return stats)
+          skills = skills.map(s => {
+            const cached = _clawHubStatsCache.get(s.slug)
+            if (cached && s.downloads === 0 && s.stars === 0) {
+              return { ...s, downloads: cached.downloads, stars: cached.stars }
+            }
+            // Cache stats from list results
+            if (s.downloads > 0 || s.stars > 0) {
+              _clawHubStatsCache.set(s.slug, { downloads: s.downloads, stars: s.stars })
+            }
+            return s
+          })
+          set({ clawHubSkills: skills })
+        } catch {
+          // search failed
+        }
+        set({ clawHubLoading: false })
+      },
+      setClawHubSort: (sort) => {
+        set({ clawHubSort: sort })
+        get().fetchClawHubSkills()
+      },
+      selectClawHubSkill: (skill) => {
+        set({ mainView: 'clawhub-skill-detail', selectedClawHubSkill: skill, selectedSkill: null, selectedCronJob: null, selectedAgentDetail: null })
+      },
+      installClawHubSkill: async (slug) => {
+        const { client } = get()
+        if (!client) {
+          set({ installHubSkillError: 'Not connected to server' })
+          return
+        }
+        set({ installingHubSkill: slug, installHubSkillError: null })
+        try {
+          await client.installHubSkill(slug)
+          await get().fetchSkills()
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Install failed'
+          console.error('ClawHub skill install failed:', msg)
+          set({ installHubSkillError: msg })
+        }
+        set({ installingHubSkill: null })
+      },
+      fetchClawHubSkillDetail: async (slug) => {
+        try {
+          // Fetch REST detail and Convex data (VT scan) in parallel
+          const [detail, convexData] = await Promise.all([
+            getClawHubSkill(slug),
+            getClawHubSkillConvex(slug)
+          ])
+          if (detail && get().selectedClawHubSkill?.slug === slug) {
+            if (convexData?.vtAnalysis) {
+              detail.vtAnalysis = convexData.vtAnalysis
+            }
+            set({ selectedClawHubSkill: detail })
+            // Cache stats
+            if (detail.downloads > 0 || detail.stars > 0) {
+              _clawHubStatsCache.set(slug, { downloads: detail.downloads, stars: detail.stars })
+            }
+            // Fetch version details (files, changelog)
+            if (detail.version) {
+              const versionInfo = await getClawHubSkillVersion(slug, detail.version)
+              if (versionInfo && get().selectedClawHubSkill?.slug === slug) {
+                set((state) => ({
+                  selectedClawHubSkill: state.selectedClawHubSkill ? {
+                    ...state.selectedClawHubSkill,
+                    changelog: versionInfo.changelog,
+                    versionFiles: versionInfo.files
+                  } : null
+                }))
+              }
+            }
+          }
+        } catch {
+          // detail fetch failed - keep the list data
+        }
+      },
 
       // Actions
       initializeApp: async () => {

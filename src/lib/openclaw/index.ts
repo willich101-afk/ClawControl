@@ -15,3 +15,4 @@ export type {
 } from './types'
 export type { CreateAgentParams, CreateAgentResult, DeleteAgentResult } from './agents'
 export { buildIdentityContent } from './agents'
+export type { ClawHubSkill, ClawHubSort } from '../clawhub'

@@ -193,7 +193,7 @@ export class OpenClawClient {
   }
 
   // RPC methods
-  private async call<T>(method: string, params?: any): Promise<T> {
+  private async call<T>(method: string, params?: any, options?: { timeoutMs?: number }): Promise<T> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('Not connected to OpenClaw')
     }
@@ -206,6 +206,8 @@ export class OpenClawClient {
       id
     }
 
+    const timeoutMs = options?.timeoutMs || 30000
+
     return new Promise((resolve, reject) => {
       this.pendingRequests.set(id, {
         resolve: resolve as (value: unknown) => void,
@@ -214,13 +216,12 @@ export class OpenClawClient {
 
       this.ws!.send(JSON.stringify(request))
 
-      // Timeout after 30 seconds
       setTimeout(() => {
         if (this.pendingRequests.has(id)) {
           this.pendingRequests.delete(id)
           reject(new Error(`Request timeout: ${method}`))
         }
-      }, 30000)
+      }, timeoutMs)
     })
   }
 
@@ -630,6 +631,10 @@ export class OpenClawClient {
 
   async installSkill(skillName: string, installId: string): Promise<void> {
     return skillsApi.installSkill(this.call.bind(this), skillName, installId)
+  }
+
+  async installHubSkill(slug: string): Promise<void> {
+    return skillsApi.installHubSkill(this.call.bind(this), slug)
   }
 
   // Cron Jobs

@@ -245,6 +245,47 @@ ipcMain.handle('subagent:openPopout', async (_event, params: {
   }
 })
 
+// Proxy fetch for CORS-restricted URLs (e.g. ClawHub API, Convex)
+ipcMain.handle('net:fetchUrl', async (_event, url: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => {
+  // Only allow https URLs
+  const parsed = new URL(url)
+  if (parsed.protocol !== 'https:') {
+    throw new Error('Only HTTPS URLs are allowed')
+  }
+
+  const { net } = await import('electron')
+  return new Promise<string>((resolve, reject) => {
+    const request = net.request({
+      url,
+      method: options?.method || 'GET'
+    })
+    if (options?.headers) {
+      for (const [key, value] of Object.entries(options.headers)) {
+        request.setHeader(key, value)
+      }
+    }
+    let body = ''
+    request.on('response', (response) => {
+      response.on('data', (chunk) => {
+        body += chunk.toString()
+      })
+      response.on('end', () => {
+        if (response.statusCode && response.statusCode >= 200 && response.statusCode < 300) {
+          resolve(body)
+        } else {
+          reject(new Error(`HTTP ${response.statusCode}`))
+        }
+      })
+      response.on('error', reject)
+    })
+    request.on('error', reject)
+    if (options?.body) {
+      request.write(options.body)
+    }
+    request.end()
+  })
+})
+
 // Trust a hostname for certificate errors (persisted across app restarts)
 ipcMain.handle('cert:trustHost', async (_event, hostname: string) => {
   // Validate hostname format

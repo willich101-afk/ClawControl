@@ -284,6 +284,24 @@ export async function openSubagentPopout(params: SubagentPopoutParams): Promise<
   window.open(`${window.location.origin}${window.location.pathname}${hash}`, '_blank')
 }
 
+// CORS-safe fetch (proxied through Electron main process, direct fetch elsewhere)
+export async function corsFetch(url: string, options?: { method?: string; headers?: Record<string, string>; body?: string }): Promise<string> {
+  const platform = getPlatform()
+
+  if (platform === 'electron' && (window as any).electronAPI?.fetchUrl) {
+    return await (window as any).electronAPI.fetchUrl(url, options)
+  }
+
+  // Fallback: direct fetch (works on mobile / web if CORS is allowed)
+  const res = await fetch(url, {
+    method: options?.method,
+    headers: options?.headers,
+    body: options?.body
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return await res.text()
+}
+
 // App visibility tracking
 let _appIsActive = true
 
